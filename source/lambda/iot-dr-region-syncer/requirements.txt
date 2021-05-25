@@ -1,0 +1,2 @@
+boto3
+dynamodb-json==1.3

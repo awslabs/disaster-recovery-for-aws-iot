@@ -1,0 +1,15 @@
+FROM python:3.7.9
+
+RUN mkdir iot-dr-region-syncer
+WORKDIR iot-dr-region-syncer
+
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip3 install -r requirements.txt
+
+# Copy Python files
+COPY iot-region-to-region-syncer.py .
+COPY device_replication.py .
+
+CMD ["python3", "iot-region-to-region-syncer.py"]

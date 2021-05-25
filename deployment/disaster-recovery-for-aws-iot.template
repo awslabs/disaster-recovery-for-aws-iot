@@ -1,0 +1,833 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "AWS CloudFormation launch template for disaster recovery for AWS IoT.",
+
+  "Mappings" : {
+    "CONFIG" : {
+        "S3GlobalBucket": { "Name": "solutions" },
+        "Solution": { "Name": "disaster-recovery-for-aws-iot" },
+        "Version": { "Name": "v1.0.0"}
+    }
+  },
+
+  "Metadata" : {
+    "AWS::CloudFormation::Interface" : {
+      "ParameterGroups" : [
+        {
+          "Label" : { "default": "AWS regions" },
+          "Parameters" : [ "PrimaryRegion", "SecondaryRegion" ]
+        },
+        {
+          "Label" : { "default": "Amazon Route 53" },
+          "Parameters" : [ "CreateHealthCheck" ]
+        }
+      ],
+      "ParameterLabels": {
+        "PrimaryRegion": { "default" : "Primary AWS region (HINT: registry events and registry indexing for things must be enabled in this region otherwise launching the stack will fail!)" },
+        "SecondaryRegion": { "default" : "Secondary AWS region" },
+        "CreateHealthCheck": { "default": "Create Route 53 health check"}
+      }
+    }
+  },
+
+  "Parameters" : {
+    "PrimaryRegion": {
+        "AllowedValues": [
+          "ap-northeast-1",
+          "ap-northeast-2",
+          "ap-southeast-1",
+          "ap-southeast-2",
+          "eu-central-1",
+          "eu-west-1",
+          "eu-west-2",
+          "us-east-1",
+          "us-east-2",
+          "us-west-1",
+          "us-west-2"
+        ],
+        "Type": "String"
+    },
+    "SecondaryRegion": {
+        "AllowedValues": [
+          "ap-northeast-1",
+          "ap-northeast-2",
+          "ap-southeast-1",
+          "ap-southeast-2",
+          "eu-central-1",
+          "eu-west-1",
+          "eu-west-2",
+          "us-east-1",
+          "us-east-2",
+          "us-west-1",
+          "us-west-2"
+        ],
+        "Type": "String"
+    },
+    "CreateHealthCheck": {
+        "AllowedValues": [
+          "yes",
+          "no"
+        ],
+        "Default": "yes",
+        "Type": "String"
+    }
+  },
+
+  "Resources": {
+
+    "CodeBuildLaunchSolutionRole": {
+       "Type": "AWS::IAM::Role",
+       "Metadata": {
+           "cfn_nag": {
+               "rules_to_suppress": [
+                   {
+                       "id": "W11",
+                       "reason": "This role will need to perform all cloudformation and iot actions on a number of resources that will be created by the solution's underlying layers. Specific ARNs or resource names cannot be determined when this role is created"
+                   },
+                   {
+                       "id": "F3",
+                       "reason": "Role will be used to create CFN stacks. Specific ARNs or resource names cannot be determined when this role is created"
+                   }
+               ]
+           }
+       },
+       "Properties": {
+          "AssumeRolePolicyDocument": {
+             "Statement": [ {
+                "Effect": "Allow",
+                "Principal": {
+                   "Service": [ "codebuild.amazonaws.com" ]
+                },
+                "Action": [ "sts:AssumeRole" ]
+             } ]
+          },
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["", ["CodeBuildLaunchSolutionPolicy-", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement": [
+                   {
+                      "Effect": "Allow",
+                      "Action": [
+                          "logs:CreateLogGroup",
+                          "logs:CreateLogStream",
+                          "logs:DeleteDestination",
+                          "logs:DeleteLogGroup",
+                          "logs:DeleteLogStream",
+                          "logs:DescribeLogGroups",
+                          "logs:PutRetentionPolicy",
+                          "logs:PutLogEvents"
+                      ],
+                      "Resource": "arn:aws:logs:*:*:*"
+                    },
+                    {
+                      "Effect": "Allow",
+                      "Action": [
+                          "iot:AddThingToThingGroup",
+                          "iot:AttachPolicy",
+                          "iot:AttachPrincipalPolicy",
+                          "iot:AttachThingPrincipal",
+                          "iot:CreateCertificateFromCsr",
+                          "iot:CreatePolicy",
+                          "iot:CreateThing",
+                          "iot:CreateTopicRule",
+                          "iot:DescribeCertificate",
+                          "iot:DescribeThing",
+                          "iot:DescribeThingGroup",
+                          "iot:DescribeThingType",
+                          "iot:DetachPolicy",
+                          "iot:DetachThingPrincipal",
+                          "iot:DetachPrincipalPolicy",
+                          "iot:GetPolicy",
+                          "iot:GetTopicRule",
+                          "iot:GetTopicRuleDestination",
+                          "iot:DisableTopicRule",
+                          "iot:EnableTopicRule",
+                          "iot:DeletePolicy",
+                          "iot:DeletePolicyVersion",
+                          "iot:DeleteThing",
+                          "iot:DeleteThingGroup",
+                          "iot:DeleteThingType",
+                          "iot:DeleteTopicRule",
+                          "iot:DeleteTopicRuleDestination",
+                          "iot:DeleteV2LoggingLevel",
+                          "iot:DeprecateThingType",
+                          "iot:DescribeEndpoint",
+                          "iot:ListAttachedPolicies",
+                          "iot:ListTagsForResource",
+                          "iot:ListPolicyPrincipals",
+                          "iot:ListPrincipalPolicies",
+                          "iot:ListPrincipalThings",
+                          "iot:ListTargetsForPolicy",
+                          "iot:ListThingGroupsForThing",
+                          "iot:ListThingPrincipals",
+                          "iot:ListTopicRuleDestinations",
+                          "iot:ListTopicRules",
+                          "iot:ReplaceTopicRule",
+                          "iot:RegisterCertificate",
+                          "iot:RegisterThing",
+                          "iot:RemoveThingFromThingGroup",
+                          "iot:UpdateCertificate",
+                          "iot:UpdateThing",
+                          "iot:UpdateThingGroupsForThing",
+                          "iot:UpdateTopicRuleDestination",
+                          "iot:AddThingToBillingGroup",
+                          "iot:DescribeBillingGroup",
+                          "iot:RemoveThingFromBillingGroup",
+                          "iot:UpdateEventConfigurations",
+                          "iot:DescribeEventConfigurations",
+                          "iot:UpdateIndexingConfiguration",
+                          "iot:DescribeIndex",
+                          "iot:GetIndexingConfiguration"
+                      ],
+                      "Resource": [
+                          "*"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": [
+                          { "Fn::Sub": ["arn:aws:s3:::${Bucket}-*/*", { "Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] } } ] }
+                      ],
+                      "Action": [
+                          "s3:GetObject",
+                          "s3:GetObjectVersion"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": [
+                          "arn:aws:s3:::iot-dr-*",
+                          "arn:aws:s3:::iot-dr-*/*"
+                      ],
+                      "Action": [
+                          "s3:CreateBucket",
+                          "s3:PutObject",
+                          "s3:PutBucketEncryption",
+                          "s3:PutEncryptionConfiguration",
+                          "s3:Get*",
+                          "s3:List*"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Action": [
+                          "apigateway:*"
+                      ],
+                      "Resource": [
+                          "arn:aws:apigateway:*::/*"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": [
+                          { "Fn::Sub": "arn:aws:dynamodb:*:${AWS::AccountId}:table/*" },
+                          { "Fn::Sub": "arn:aws:dynamodb:*:${AWS::AccountId}:global-table/*" }
+                      ],
+                      "Action": [
+                          "dynamodb:CreateTable",
+                          "dynamodb:CreateGlobalTable",
+                          "dynamodb:DeleteTable",
+                          "dynamodb:DescribeTable",
+                          "dynamodb:DescribeGlobalTable",
+                          "dynamodb:DescribeGlobalTableSettings",
+                          "dynamodb:DescribeTimeToLive",
+                          "dynamodb:UpdateTable",
+                          "dynamodb:UpdateTableReplicaAutoScaling",
+                          "dynamodb:UpdateTimeToLive"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": [
+                          "*"
+                      ],
+                      "Action": [
+                          "dynamodb:DescribeLimits",
+                          "dynamodb:ListTagsOfResource"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": [
+                          { "Fn::Sub": "arn:aws:events:*:${AWS::AccountId}:rule/*" }
+                      ],
+                      "Action": [
+                          "events:*"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": [
+                          { "Fn::Sub": "arn:aws:lambda:*:${AWS::AccountId}:function:*" },
+                          { "Fn::Sub": "arn:aws:lambda:*:${AWS::AccountId}:layer:*" },
+                          { "Fn::Sub": "arn:aws:lambda:*:${AWS::AccountId}:event-source-mapping:*" }
+                      ],
+                      "Action": [
+                          "lambda:*"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": [
+                          "*"
+                      ],
+                      "Action": [
+                          "lambda:GetEventSourceMapping",
+                          "lambda:CreateEventSourceMapping"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": [
+                          { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:*" }
+                      ],
+                      "Action": [
+                          "iam:AttachRolePolicy",
+                          "iam:CreatePolicy",
+                          "iam:CreatePolicyVersion",
+                          "iam:CreateRole",
+                          "iam:CreateServiceLinkedRole",
+                          "iam:DeletePolicy",
+                          "iam:DeletePolicyVersion",
+                          "iam:DeleteRole",
+                          "iam:DeleteRolePermissionsBoundary",
+                          "iam:DeleteRolePolicy",
+                          "iam:DeleteServiceLinkedRole",
+                          "iam:DetachRolePolicy",
+                          "iam:GetRole",
+                          "iam:GetRolePolicy",
+                          "iam:PutRolePolicy",
+                          "iam:SetDefaultPolicyVersion",
+                          "iam:TagRole",
+                          "iam:UntagRole",
+                          "iam:UpdateAssumeRolePolicy",
+                          "iam:UpdateRole",
+                          "iam:UpdateRoleDescription",
+                          "iam:PassRole"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": "*",
+                      "Action": [
+                          "route53:ChangeTagsForResource",
+                          "route53:CreateHealthCheck",
+                          "route53:DeleteHealthCheck",
+                          "route53:GetHealthCheck",
+                          "route53:GetHealthCheckStatus",
+                          "route53:UpdateHealthCheck"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": [
+                          { "Fn::Sub": "arn:aws:states:*:${AWS::AccountId}:stateMachine:*" }
+                      ],
+                      "Action": [
+                          "states:*"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Resource": [
+                          { "Fn::Sub": "arn:aws:cloudformation:*:${AWS::AccountId}:stack/*/*" }
+                      ],
+                      "Action": [
+                          "cloudformation:CreateStack",
+                          "cloudformation:DescribeStacks",
+                          "cloudformation:DescribeStackResources"
+                      ]
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Action": [
+                          "codebuild:CreateReportGroup",
+                          "codebuild:CreateReport",
+                          "codebuild:UpdateReport",
+                          "codebuild:BatchPutTestCases",
+                          "codebuild:BatchPutCodeCoverages"
+                      ],
+                      "Resource": { "Fn::Sub": "arn:aws:codebuild:*:${AWS::AccountId}:report-group/*" }
+                  }
+               ]
+            }
+           }
+         ],
+        "Path": "/service-role/",
+        "Tags": [
+          {"Key": "Solution", "Value": "IoTDR "}
+        ]
+      }
+  },
+
+
+  "CodeBuildLaunchSolution": {
+      "Type": "AWS::CodeBuild::Project",
+      "Metadata": {
+          "cfn_nag": {
+              "rules_to_suppress": [
+                  {
+                      "id": "W32",
+                      "reason": "Encryption not required as codebuild only processes public available information."
+                  }
+              ]
+          }
+      },
+      "Properties": {
+          "Description": "Codebuild to launch IoT DR solution in primary and secondary region",
+          "ServiceRole": { "Fn::GetAtt" : ["CodeBuildLaunchSolutionRole", "Arn"] },
+          "Artifacts": {
+            "Type": "NO_ARTIFACTS"
+          },
+          "Source": {
+            "Location": {
+               "Fn::Sub": [
+                  "${Bucket}-${AWS::Region}/${Solution}/${Version}/iot-dr-solution.zip",
+                   {
+                     "Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] },
+                     "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                     "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                   }
+               ]
+            },
+            "BuildSpec": "launch-solution.yml",
+            "Type": "S3"
+          },
+          "Environment": {
+              "ComputeType": "BUILD_GENERAL1_SMALL",
+              "Image": "aws/codebuild/amazonlinux2-x86_64-standard:3.0",
+              "Type": "LINUX_CONTAINER",
+              "EnvironmentVariables": [
+                {
+                  "Name": "BUCKET_RESOURCES",
+                  "Type": "PLAINTEXT",
+                  "Value": {
+                     "Fn::Sub": [
+                        "${S3Bucket}-reference",
+                         {
+                           "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                         }
+                     ]
+                  }
+                },
+                {
+                  "Name": "SOLUTION_NAME",
+                  "Type": "PLAINTEXT",
+                  "Value": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] }
+                },
+                {
+                  "Name": "VERSION",
+                  "Type": "PLAINTEXT",
+                  "Value": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                },
+                {
+                  "Name": "CREATE_HEALTH_CHECK",
+                  "Type": "PLAINTEXT",
+                  "Value": { "Ref": "CreateHealthCheck" }
+                }
+              ]
+          },
+          "LogsConfig": {
+            "CloudWatchLogs" : {
+              "Status" : "ENABLED"
+            }
+          },
+          "TimeoutInMinutes": 30,
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+      }
+    },
+
+    "CustomLaunchSolutionLambdaRole": {
+       "Type": "AWS::IAM::Role",
+       "Metadata": {
+           "cfn_nag": {
+               "rules_to_suppress": [
+                   {
+                       "id": "W11",
+                       "reason": "This role will need to perform all cloudformation and iot actions on a number of resources that will be created by the solution's underlying layers. Specific ARNs or resource names cannot be determined when this role is created"
+                   },
+                   {
+                       "id": "F3",
+                       "reason": "Role will be used to create CFN stacks. Specific ARNs or resource names cannot be determined when this role is created"
+                   }
+               ]
+           }
+       },
+       "Properties": {
+          "AssumeRolePolicyDocument": {
+             "Statement": [ {
+                "Effect": "Allow",
+                "Principal": {
+                   "Service": [ "lambda.amazonaws.com" ]
+                },
+                "Action": [ "sts:AssumeRole" ]
+             } ]
+          },
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["-", ["CustomLaunchSolutionLambdaPolicy", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement":[
+                   {
+                     "Effect": "Allow",
+                     "Action": [
+                        "logs:CreateLogGroup",
+                        "logs:CreateLogStream",
+                        "logs:DeleteLogGroup",
+                        "logs:PutLogEvents"
+                     ],
+                     "Resource": "arn:aws:logs:*:*:*"
+                 },
+                 {
+                    "Effect": "Allow",
+                    "Action": [
+                        "xray:PutTraceSegments",
+                        "xray:PutTelemetryRecords"
+                    ],
+                    "Resource": [
+                        "*"
+                    ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Action": [
+                         "cloudformation:DescribeStacks",
+                         "cloudformation:DeleteStack",
+                         "cloudformation:ListStacks"
+                     ],
+                     "Resource": [
+                       { "Fn::Sub": "arn:aws:cloudformation:*:${AWS::AccountId}:*" }
+                     ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Resource": [
+                         "arn:aws:s3:::iot-dr-*",
+                         "arn:aws:s3:::iot-dr-*/*"
+                     ],
+                     "Action": [
+                         "s3:Delete*",
+                         "s3:Get*",
+                         "s3:List*"
+                     ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Action": [
+                        "apigateway:DeleteRestApi",
+                        "apigateway:DeleteDeployment",
+                        "apigateway:DeleteStage",
+                        "apigateway:DeleteApiKey",
+                        "apigateway:DeleteUsagePlan",
+                        "apigateway:GetUsagePlan",
+                        "apigateway:UpdateUsagePlan",
+                        "apigateway:DeleteUsagePlanKey",
+                        "apigateway:DELETE",
+                        "apigateway:GET",
+                        "apigateway:PATCH"
+                     ],
+                     "Resource": [
+                         "arn:aws:apigateway:*::/*"
+                     ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Resource": [
+                         { "Fn::Sub": "arn:aws:dynamodb:*:${AWS::AccountId}:table/*" },
+                         { "Fn::Sub": "arn:aws:dynamodb::${AWS::AccountId}:global-table/*" }
+                     ],
+                     "Action": [
+                       "dynamodb:DeleteTable",
+                       "dynamodb:DescribeTable"
+                     ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Resource": [
+                         { "Fn::Sub": "arn:aws:events:*:${AWS::AccountId}:rule/*" }
+                     ],
+                     "Action": [
+                         "events:DeleteRule",
+                         "events:RemoveTargets"
+                     ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Resource": [
+                         { "Fn::Sub": "arn:aws:lambda:*:${AWS::AccountId}:function:*" },
+                         { "Fn::Sub": "arn:aws:lambda:*:${AWS::AccountId}:layer:*" },
+                         { "Fn::Sub": "arn:aws:lambda:*:${AWS::AccountId}:event-source-mapping:*" }
+                     ],
+                     "Action": [
+                        "lambda:DeleteFunction",
+                        "lambda:DeleteLayerVersion",
+                        "lambda:InvokeFunction",
+                        "lambda:ListTags",
+                        "lambda:RemovePermission",
+                        "lambda:TagResource"
+                     ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Resource": [
+                         "*"
+                     ],
+                     "Action": [
+                         "lambda:GetEventSourceMapping",
+                         "lambda:DeleteEventSourceMapping"
+                     ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Action": [
+                        "iot:DeletePolicy",
+                        "iot:DeleteTopicRule",
+                        "iot:DeleteTopicRuleDestination",
+                        "iot:DescribeEndpoint",
+                        "iot:DescribeEventConfigurations",
+                        "iot:GetTopicRule",
+                        "iot:GetIndexingConfiguration",
+                        "iot:ListTopicRules",
+                        "iot:ListTagsForResource"
+                     ],
+                     "Resource": [
+                         "*"
+                     ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Resource": [
+                         { "Fn::Sub": "arn:aws:iam::${AWS::AccountId}:*" }
+                     ],
+                     "Action": [
+                        "iam:DeletePolicy",
+                        "iam:DeletePolicyVersion",
+                        "iam:DeleteRole",
+                        "iam:DeleteRolePermissionsBoundary",
+                        "iam:DeleteRolePolicy",
+                        "iam:DeleteServiceLinkedRole",
+                        "iam:DetachRolePolicy",
+                        "iam:UntagRole",
+                        "iam:PassRole"
+                     ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Resource": [
+                         "*"
+                     ],
+                     "Action": [
+                         "route53:DeleteHealthCheck"
+                     ]
+                 },
+                 {
+                     "Effect": "Allow",
+                     "Resource": [
+                         { "Fn::Sub": "arn:aws:states:*:${AWS::AccountId}:stateMachine:*" }
+                     ],
+                     "Action": [
+                         "states:DeleteStateMachine"
+                     ]
+                 },
+                 {
+                    "Action": [
+                        "health:DescribeEventAggregates"
+                    ],
+                    "Resource": [
+                        "*"
+                    ],
+                    "Effect": "Allow"
+                  },
+                  {
+                     "Effect": "Allow",
+                     "Action": [
+                         "codebuild:StartBuild",
+                         "codebuild:DeleteProject"
+                     ],
+                     "Resource": {
+                        "Fn::Sub": [
+                            "arn:aws:codebuild:*:${AWS::AccountId}:project/${CodebuildProject}",
+                            { "CodebuildProject": { "Ref": "CodeBuildLaunchSolution" } }
+                        ]
+                   }
+                  }
+                ]
+              }
+            }
+          ],
+          "Path": "/service-role/",
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        }
+    },
+
+
+    "CustomLaunchSolutionLambda": {
+      "Type": "Custom::CustomLaunchSolutionLambda",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomLaunchSolutionLambdaFunction",
+            "Arn"
+          ]
+        },
+        "PRIMARY_REGION": { "Ref": "PrimaryRegion" },
+        "SECONDARY_REGION": { "Ref": "SecondaryRegion" },
+        "CODEBUID_PROJECT": { "Ref": "CodeBuildLaunchSolution" }
+      }
+    },
+
+    "CustomLaunchSolutionLambdaFunction": {
+        "Type": "AWS::Lambda::Function",
+        "Metadata": {
+            "cfn_nag": {
+                "rules_to_suppress": [
+                    {
+                        "id": "W89",
+                        "reason": "Lambda function needs access to public endpoints."
+                    },
+                    {
+                        "id": "W92",
+                        "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                    }
+                ]
+            }
+        },
+        "Properties": {
+          "Handler": "lambda_function.lambda_handler",
+          "Role": { "Fn::GetAtt" : ["CustomLaunchSolutionLambdaRole", "Arn"] },
+          "Code": {
+            "S3Bucket": {
+               "Fn::Sub": [
+                  "${S3Bucket}-${AWS::Region}",
+                   {
+                     "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                   }
+               ]
+            },
+            "S3Key": {
+               "Fn::Sub": [
+                  "${Solution}/${Version}/iot-dr-launch-solution.zip",
+                   {
+                     "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                     "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                   }
+               ]
+            }
+          },
+          "Runtime": "python3.8",
+          "MemorySize" : 192,
+          "Timeout": 720,
+          "TracingConfig": { "Mode" : "Active" },
+          "Tags": [
+            {"Key": "CloudFormation", "Value": "CustomResource "},
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        }
+    }
+  },
+
+    "Outputs": {
+      "CFNIoTDRPrimaryStack": {
+        "Description": "Link to IoT DR primary stack",
+        "Value": {
+           "Fn::Sub": [
+              "https://console.aws.amazon.com/cloudformation/home?region=${PrimaryRegion}#/stacks?filteringText=IoTDRPrimary${StackPostfix}",
+               { "PrimaryRegion": { "Ref": "PrimaryRegion" },
+                 "StackPostfix": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "STACK_POSTFIX"] }
+               }
+           ]
+         }
+      },
+      "CFNIoTDRSecondaryStack": {
+        "Description": "Link to IoT DR secondary stack",
+        "Value": {
+           "Fn::Sub": [
+              "https://console.aws.amazon.com/cloudformation/home?region=${SecondaryRegion}#/stacks?filteringText=IoTDRSecondary${StackPostfix}",
+               { "SecondaryRegion": { "Ref": "SecondaryRegion" },
+                 "StackPostfix": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "STACK_POSTFIX"] }
+               }
+           ]
+         }
+      },
+      "CFNR53HealthCheckPrimaryStack": {
+        "Description": "Link to R53 health checker primary stack",
+        "Value": {
+           "Fn::Sub": [
+              "https://console.aws.amazon.com/cloudformation/home?region=${PrimaryRegion}#/stacks?filteringText=R53HealthChecker${StackPostfix}",
+               { "PrimaryRegion": { "Ref": "PrimaryRegion" },
+                 "StackPostfix": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "STACK_POSTFIX"] }
+               }
+           ]
+         }
+      },
+      "CFNR53HealthCheckSecondaryStack": {
+        "Description": "Link to R53 health checker secondary stack",
+        "Value": {
+           "Fn::Sub": [
+              "https://console.aws.amazon.com/cloudformation/home?region=${SecondaryRegion}#/stacks?filteringText=R53HealthChecker${StackPostfix}",
+               { "SecondaryRegion": { "Ref": "SecondaryRegion" },
+                 "StackPostfix": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "STACK_POSTFIX"] }
+               }
+           ]
+         }
+      },
+      "CodeBuildLaunchSolutionProject": {
+        "Description": "Link to the CodeBuild project that launches the IoT DR solution",
+        "Value": {
+           "Fn::Sub": [
+             "https://console.aws.amazon.com/codesuite/codebuild/projects/${CodeBuildProject}/history?region=${AWS::Region}",
+             { "CodeBuildProject": { "Ref": "CodeBuildLaunchSolution" } }
+           ]
+         }
+      },
+      "IoTEndpointPrimary": {
+        "Description": "IoT endpoint primary region",
+        "Value": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "IOT_ENDPOINT_PRIMARY"] }
+      },
+      "IoTEndpointSecondary": {
+        "Description": "IoT endpoint secondary region",
+        "Value": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "IOT_ENDPOINT_SECONDARY"] }
+      },
+      "StackPostfix": {
+        "Description": "Stack postfix",
+        "Value": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "STACK_POSTFIX"] }
+      },
+      "LambdaS3Url": {
+        "Description": "S3 url where Lambda function code has been copied to",
+        "Value": {
+           "Fn::Sub": [
+             "s3://iot-dr-primary-${Uuid}/lambda/",
+             { "Uuid": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "UUID"] } }
+           ]
+         }
+      },
+      "JupyterS3Url": {
+        "Description": "S3 url where Jupyter notebooks been copied to",
+        "Value": {
+           "Fn::Sub": [
+             "s3://iot-dr-primary-${Uuid}/jupyter/",
+             { "Uuid": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "UUID"] } }
+           ]
+         }
+      },
+      "ToolsS3Url": {
+        "Description": "S3 url where tools have been copied to",
+        "Value": {
+           "Fn::Sub": [
+             "s3://iot-dr-primary-${Uuid}/tools/",
+             { "Uuid": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "UUID"] } }
+           ]
+         }
+      },
+      "UuidS3Postfix": {
+        "Description": "S3 bucket postfix",
+        "Value": { "Fn::GetAtt" : ["CustomLaunchSolutionLambda", "UUID"] }
+      }
+    }
+}

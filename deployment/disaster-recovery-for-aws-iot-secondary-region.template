@@ -1,0 +1,1234 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "AWS CloudFormation template for disaster recovery for AWS IoT. Secondary region.",
+
+  "Mappings" : {
+    "CONFIG" : {
+        "S3GlobalBucket": { "Name": "solutions" },
+        "Solution": { "Name": "disaster-recovery-for-aws-iot" },
+        "Version": { "Name": "v1.0.0"}
+    }
+  },
+
+  "Parameters" : {
+    "GlobalDynamoDBTableName" : {
+      "Description" : "Name for the global DynamodDB table. You must use the same table name in the primary and secondary region!",
+      "Type" : "String",
+      "Default": "IoTDRGlobalTable",
+      "MinLength" : "3",
+      "MaxLength" : "255",
+      "AllowedPattern" : "^[a-zA-Z0-9_.-]+$"
+    },
+    "Postfix" : {
+      "Description" : "Datetime string used to make resources name unique.",
+      "Type" : "String"
+    },
+    "IoTEndpointPrimary" : {
+      "Description" : "IoT endpoint in primary region.",
+      "Type" : "String"
+    },
+    "IoTEndpointSecondary" : {
+      "Description" : "IoT endpoint in secondary region.",
+      "Type" : "String"
+    }
+  },
+
+  "Resources" : {
+
+    "ProvisioningDynamoDBTable" : {
+      "Type" : "AWS::DynamoDB::Table",
+          "Properties" : {
+            "BillingMode" : "PAY_PER_REQUEST",
+            "SSESpecification": {"SSEEnabled": true},
+            "TableName": {"Ref": "GlobalDynamoDBTableName"},
+            "AttributeDefinitions" : [
+              {
+                  "AttributeName": "uuid",
+                  "AttributeType": "S"
+              }
+            ],
+            "KeySchema" : [
+              {
+                  "KeyType": "HASH",
+                  "AttributeName": "uuid"
+              }
+            ],
+            "StreamSpecification": {
+              "StreamViewType" : "NEW_AND_OLD_IMAGES"
+          },
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        },
+        "Metadata": {
+            "cfn_nag": {
+                "rules_to_suppress": [
+                    {
+                        "id": "W28",
+                        "reason": "Explicit name for global DynamoDB table required."
+                    },
+                    {
+                        "id": "W78",
+                        "reason": "Backup not required as table is used for replication and not long term storage."
+                    }
+                ]
+            }
+        }
+    },
+
+    "DynamoTriggerMapping": {
+    "Type": "AWS::Lambda::EventSourceMapping",
+    "Properties": {
+        "BatchSize" : 1,
+        "Enabled" : true,
+        "MaximumBatchingWindowInSeconds" : 10,
+        "EventSourceArn": { "Fn::GetAtt": ["ProvisioningDynamoDBTable", "StreamArn"] },
+        "FunctionName": { "Fn::GetAtt": ["DynamoTriggerLambdaFunction", "Arn"] },
+        "StartingPosition": "LATEST"
+      }
+    },
+
+    "ThingErrorsDynamoDBTable" : {
+      "Type" : "AWS::DynamoDB::Table",
+          "Properties" : {
+            "BillingMode" : "PAY_PER_REQUEST",
+            "SSESpecification": {"SSEEnabled": true},
+            "AttributeDefinitions" : [
+              {
+                  "AttributeName": "action",
+                  "AttributeType": "S"
+              },
+              {
+                  "AttributeName": "thing_name",
+                  "AttributeType": "S"
+              }
+            ],
+            "KeySchema" : [
+              {
+                  "AttributeName": "thing_name",
+                  "KeyType": "HASH"
+              },
+              {
+                  "AttributeName": "action",
+                  "KeyType": "RANGE"
+              }
+            ],
+            "GlobalSecondaryIndexes": [
+              {
+                  "IndexName": "action-index",
+                  "KeySchema": [
+                      {
+                          "AttributeName": "action",
+                          "KeyType": "HASH"
+                      }
+                  ],
+                  "Projection": {
+                      "ProjectionType": "ALL"
+                  }
+              }
+          ],
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        },
+        "Metadata": {
+            "cfn_nag": {
+                "rules_to_suppress": [
+                    {
+                        "id": "W78",
+                        "reason": "Backup not required as table is used not for long term storage."
+                    }
+                ]
+            }
+        }
+    },
+
+    "JITRRule": {
+      "Type": "AWS::IoT::TopicRule",
+      "Properties": {
+        "TopicRulePayload": {
+          "AwsIotSqlVersion": "2016-03-23",
+          "RuleDisabled": false,
+          "Sql": "SELECT * FROM '$aws/events/certificates/registered/#' WHERE certificateStatus = \"PENDING_ACTIVATION\"",
+          "Actions": [{
+            "Lambda": {
+              "FunctionArn": { "Fn::GetAtt": ["JITRLambdaFunction", "Arn"] }
+              }
+            }]
+          }
+        }
+    },
+
+    "IoTAccessServicesRole": {
+       "Type": "AWS::IAM::Role",
+       "Properties": {
+          "AssumeRolePolicyDocument": {
+             "Statement": [ {
+                "Effect": "Allow",
+                "Principal": {
+                   "Service": [ "iot.amazonaws.com" ]
+                },
+                "Action": [ "sts:AssumeRole" ]
+             } ]
+          },
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["", ["IoTBulkProvisioningInlinePolicy-", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement":[
+                   {
+                      "Effect": "Allow",
+                      "Action": [
+                          "logs:CreateLogGroup",
+                          "logs:CreateLogStream",
+                          "logs:PutLogEvents",
+                          "logs:PutMetricFilter",
+                          "logs:PutRetentionPolicy"
+                      ],
+                      "Resource": [
+                        { "Fn::Sub": "arn:aws:logs:*:${AWS::AccountId}:log-group:*:log-stream:*" }
+                      ]
+                   },
+                   {
+                      "Effect": "Allow",
+                      "Action": "dynamodb:PutItem",
+                      "Resource": { "Fn::GetAtt": ["ProvisioningDynamoDBTable", "Arn"] }
+                   }
+                ]
+              }
+             }
+           ],
+          "Path": "/service-role/",
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        }
+    },
+
+    "IoTDRLambdaLayer": {
+        "Type": "AWS::Lambda::LayerVersion",
+        "Properties": {
+            "LayerName": {
+               "Fn::Sub": [
+                  "IoTDRLayer${Postfix}",
+                   {
+                     "Postfix": { "Ref": "Postfix" }
+                   }
+               ]
+            },
+            "CompatibleRuntimes": [
+                "python3.7",
+                "python3.8"
+            ],
+            "Content": {
+              "S3Bucket": {
+                 "Fn::Sub": [
+                    "${S3Bucket}-${AWS::Region}",
+                     {
+                       "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                     }
+                 ]
+              },
+              "S3Key": {
+                 "Fn::Sub": [
+                    "${Solution}/${Version}/iot-dr-layer.zip",
+                     {
+                       "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                       "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                     }
+                 ]
+              }
+            },
+            "Description": "Lambda layer for DR functions",
+            "LicenseInfo": "Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. SPDX-License-Identifier: Apache-2.0"
+        }
+    },
+
+    "JITRLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Metadata": {
+          "cfn_nag": {
+              "rules_to_suppress": [
+                  {
+                      "id": "W89",
+                      "reason": "Lambda function needs access to public endpoints."
+                  }
+              ]
+          }
+      },
+      "Metadata": {
+          "cfn_nag": {
+              "rules_to_suppress": [
+                  {
+                      "id": "W89",
+                      "reason": "Lambda function needs access to public endpoints."
+                  },
+                  {
+                      "id": "W92",
+                      "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                  }
+              ]
+          }
+      },
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+             "Fn::Sub": [
+                "${S3Bucket}-${AWS::Region}",
+                 {
+                   "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                 }
+             ]
+          },
+          "S3Key": {
+             "Fn::Sub": [
+                "${Solution}/${Version}/iot-mr-jitr.zip",
+                 {
+                   "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                   "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                 }
+             ]
+          }
+        },
+        "Handler": "lambda_function.lambda_handler",
+        "Role": { "Fn::GetAtt": ["JITRLambdaRole", "Arn"] },
+        "Runtime": "python3.8",
+        "MemorySize" : 256,
+        "Timeout": 30,
+        "TracingConfig": { "Mode": "Active" },
+        "Tags": [
+          {"Key": "Solution", "Value": "IoTDR "}
+        ]
+      }
+    },
+
+    "JITRLambdaPermission": {
+        "Type" : "AWS::Lambda::Permission",
+        "Properties" : {
+            "Action" : "lambda:InvokeFunction",
+            "FunctionName" : { "Fn::GetAtt": ["JITRLambdaFunction", "Arn"] },
+            "Principal" : "iot.amazonaws.com",
+            "SourceAccount" : { "Ref": "AWS::AccountId" },
+            "SourceArn" : { "Fn::GetAtt" : ["JITRRule", "Arn"] }
+          }
+      },
+
+      "CrossRegionLambdaFunction": {
+        "Type": "AWS::Lambda::Function",
+        "Metadata": {
+            "cfn_nag": {
+                "rules_to_suppress": [
+                    {
+                        "id": "W89",
+                        "reason": "Lambda function needs access to public endpoints."
+                    },
+                    {
+                        "id": "W92",
+                        "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                    }
+                ]
+            }
+        },
+        "Properties": {
+          "Code": {
+            "S3Bucket": {
+               "Fn::Sub": [
+                  "${S3Bucket}-${AWS::Region}",
+                   {
+                     "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                   }
+               ]
+            },
+            "S3Key": {
+               "Fn::Sub": [
+                  "${Solution}/${Version}/iot-mr-cross-region.zip",
+                   {
+                     "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                     "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                   }
+               ]
+            }
+          },
+          "Handler": "lambda_function.lambda_handler",
+          "Role": { "Fn::GetAtt": ["SFNLambdaIoTReplicationRole", "Arn"] },
+          "Runtime": "python3.8",
+          "MemorySize" : 256,
+          "Timeout": 30,
+          "TracingConfig": {"Mode": "Active"},
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        }
+      },
+
+    "JITRLambdaRole": {
+       "Type": "AWS::IAM::Role",
+       "Properties": {
+          "AssumeRolePolicyDocument": {
+             "Statement": [ {
+                "Effect": "Allow",
+                "Principal": {
+                   "Service": [ "lambda.amazonaws.com" ]
+                },
+                "Action": [ "sts:AssumeRole" ]
+             } ]
+          },
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["", ["JITRLambdaPolicy-", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement":[
+                   {
+                     "Effect": "Allow",
+                     "Action": [
+                       "logs:CreateLogGroup",
+                       "logs:CreateLogStream",
+                       "logs:PutLogEvents"
+                     ],
+                     "Resource": "arn:aws:logs:*:*:*"
+                   },
+                   {
+                      "Effect": "Allow",
+                      "Action": [
+                          "xray:PutTraceSegments",
+                          "xray:PutTelemetryRecords"
+                      ],
+                      "Resource": [
+                          "*"
+                      ]
+                   },
+                   {
+                      "Effect": "Allow",
+                      "Action": [
+                          "iot:AttachThingPrincipal",
+                          "iot:GetPolicy",
+                          "iot:CreateThing",
+                          "iot:AttachPolicy",
+                          "iot:DescribeThing",
+                          "iot:DescribeCertificate",
+                          "iot:CreatePolicy",
+                          "iot:UpdateCertificate"
+                      ],
+                      "Resource": "*"
+                   }
+                ]
+              }
+             }
+            ],
+          "Path": "/service-role/",
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        },
+        "Metadata": {
+            "cfn_nag": {
+                "rules_to_suppress": [
+                    {
+                        "id": "W11",
+                        "reason": "Not all API do support resource level based permissions"
+                    }
+                ]
+            }
+        }
+    },
+
+    "LambdaDynamoTriggerRole": {
+       "Type": "AWS::IAM::Role",
+       "Properties": {
+          "AssumeRolePolicyDocument": {
+             "Statement": [ {
+                "Effect": "Allow",
+                "Principal": {
+                   "Service": [ "lambda.amazonaws.com" ]
+                },
+                "Action": [ "sts:AssumeRole" ]
+             } ]
+          },
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["", ["LambdaDynamoTriggerInlinePolicy-", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement": [
+                   {
+                       "Effect": "Allow",
+                       "Action": [
+                           "logs:CreateLogGroup",
+                           "logs:CreateLogStream",
+                           "logs:PutLogEvents"
+                       ],
+                       "Resource": "arn:aws:logs:*:*:*"
+                   },
+                   {
+                      "Effect": "Allow",
+                      "Action": [
+                          "xray:PutTraceSegments",
+                          "xray:PutTelemetryRecords"
+                      ],
+                      "Resource": [
+                          "*"
+                      ]
+                   },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                            "dynamodb:GetShardIterator",
+                            "dynamodb:ListStreams",
+                            "dynamodb:DescribeStream",
+                            "dynamodb:GetRecords"
+                        ],
+                        "Resource": [
+                            {"Fn::Join": ["", ["arn:aws:dynamodb:*:",{ "Ref": "AWS::AccountId" } ,":table/", {"Ref": "GlobalDynamoDBTableName"}, "/stream/*"]]}
+                        ]
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": "states:StartExecution",
+                        "Resource": [
+                            { "Fn::Sub": "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:*" }
+                        ]
+                    }
+                  ]
+                }
+              }
+            ],
+            "Path": "/service-role/",
+            "Tags": [
+              {"Key": "Solution", "Value": "IoTDR "}
+            ]
+          },
+          "Metadata": {
+              "cfn_nag": {
+                  "rules_to_suppress": [
+                      {
+                          "id": "W11",
+                          "reason": "Not all API do support resource level based permissions"
+                      }
+                  ]
+              }
+          }
+    },
+
+    "SFNLambdaIoTReplicationRole": {
+       "Type": "AWS::IAM::Role",
+       "Properties": {
+          "AssumeRolePolicyDocument": {
+             "Statement": [ {
+                "Effect": "Allow",
+                "Principal": {
+                   "Service": [ "lambda.amazonaws.com" ]
+                },
+                "Action": [ "sts:AssumeRole" ]
+             } ]
+          },
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["", ["SFNLambdaPolicy-", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement": [
+                   {
+                       "Effect": "Allow",
+                       "Action": [
+                           "logs:CreateLogGroup",
+                           "logs:CreateLogStream",
+                           "logs:PutLogEvents"
+                       ],
+                       "Resource": "arn:aws:logs:*:*:*"
+                   },
+                   {
+                      "Effect": "Allow",
+                      "Action": [
+                          "xray:PutTraceSegments",
+                          "xray:PutTelemetryRecords"
+                      ],
+                      "Resource": [
+                          "*"
+                      ]
+                   },
+                    {
+                        "Action": [
+                            "dynamodb:DeleteItem",
+                            "dynamodb:DescribeTable",
+                            "dynamodb:GetItem",
+                            "dynamodb:PutItem",
+                            "dynamodb:Query",
+                            "dynamodb:UpdateItem"
+                        ],
+                        "Resource": [
+                            { "Fn::GetAtt": ["ThingErrorsDynamoDBTable", "Arn"] }
+                        ],
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Action": [
+                            "dynamodb:Query"
+                        ],
+                        "Resource": [
+                            {"Fn::Join": ["", [{ "Fn::GetAtt": ["ThingErrorsDynamoDBTable", "Arn"] } ,"/index/*"]]}
+                        ],
+                        "Effect": "Allow"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": [
+                          "iot:AddThingToThingGroup",
+                          "iot:AttachPolicy",
+                          "iot:AttachThingPrincipal",
+                          "iot:CreateDynamicThingGroup",
+                          "iot:CreatePolicy",
+                          "iot:CreateThing",
+                          "iot:CreateThingGroup",
+                          "iot:CreateThingType",
+                          "iot:DeleteCertificate",
+                          "iot:DeleteDynamicThingGroup",
+                          "iot:DeletePolicy",
+                          "iot:DeletePolicyVersion",
+                          "iot:DeleteThing",
+                          "iot:DeleteThingGroup",
+                          "iot:DeleteThingShadow",
+                          "iot:DeleteThingType",
+                          "iot:DeprecateThingType",
+                          "iot:DescribeCertificate",
+                          "iot:DescribeEndpoint",
+                          "iot:DescribeThing",
+                          "iot:DescribeThingGroup",
+                          "iot:DescribeThingType",
+                          "iot:DetachPolicy",
+                          "iot:DetachThingPrincipal",
+                          "iot:GetIndexingConfiguration",
+                          "iot:GetPolicy",
+                          "iot:GetThingShadow",
+                          "iot:ListAttachedPolicies",
+                          "iot:ListPolicyVersions",
+                          "iot:ListPrincipalPolicies",
+                          "iot:ListPrincipalThings",
+                          "iot:ListTargetsForPolicy",
+                          "iot:ListThingGroupsForThing",
+                          "iot:ListThingPrincipals",
+                          "iot:ListThings",
+                          "iot:ListThingTypes",
+                          "iot:ListThingsInThingGroup",
+                          "iot:RegisterCertificateWithoutCA",
+                          "iot:RemoveThingFromThingGroup",
+                          "iot:UpdateCertificate",
+                          "iot:UpdateThing",
+                          "iot:UpdateThingGroup",
+                          "iot:UpdateThingShadow"
+                        ],
+                        "Resource": "*"
+                    },
+                    {
+                        "Effect": "Allow",
+                        "Action": "states:StartExecution",
+                        "Resource": [
+                            {"Fn::Join": ["", ["arn:aws:states:", {"Ref": "AWS::Region"}, ":", { "Ref": "AWS::AccountId" }, ":stateMachine:*"]]}
+                        ]
+                    }
+                  ]
+                }
+              }
+            ],
+            "Path": "/service-role/",
+            "Tags": [
+              {"Key": "Solution", "Value": "IoTDR "}
+            ]
+          },
+          "Metadata": {
+              "cfn_nag": {
+                  "rules_to_suppress": [
+                      {
+                          "id": "W11",
+                          "reason": "Not all API do support resource level based permissions"
+                      }
+                  ]
+              }
+          }
+    },
+
+    "StateMachineRole": {
+       "Type": "AWS::IAM::Role",
+       "Properties": {
+          "AssumeRolePolicyDocument": {
+             "Statement": [ {
+                "Effect": "Allow",
+                "Principal": {
+                   "Service": [ "states.amazonaws.com" ]
+                },
+                "Action": [ "sts:AssumeRole" ]
+             } ]
+          },
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["", ["StateMachninePolicy-", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement": [
+                   {
+                       "Effect": "Allow",
+                       "Action": [
+                           "logs:CreateLogDelivery",
+                           "logs:GetLogDelivery",
+                           "logs:UpdateLogDelivery",
+                           "logs:DeleteLogDelivery",
+                           "logs:ListLogDeliveries",
+                           "logs:PutResourcePolicy",
+                           "logs:DescribeResourcePolicies",
+                           "logs:DescribeLogGroups"
+                       ],
+                       "Resource": "*"
+                   },
+                   {
+                       "Effect": "Allow",
+                       "Action": [
+                           "lambda:InvokeFunction"
+                       ],
+                       "Resource": [
+                           { "Fn::GetAtt": ["SFNThingCrudLambdaFunction", "Arn"] },
+                           { "Fn::GetAtt": ["SFNThingTypeCrudLambdaFunction", "Arn"] },
+                           { "Fn::GetAtt": ["SFNThingGroupCrudLambdaFunction", "Arn"] },
+                           { "Fn::GetAtt": ["SFNShadowSyncerLambdaFunction", "Arn"] }
+                       ]
+                   }
+                   ] } } ],
+          "Path": "/service-role/",
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        },
+        "Metadata": {
+            "cfn_nag": {
+                "rules_to_suppress": [
+                    {
+                        "id": "W11",
+                        "reason": "Not all API do support resource level based permissions"
+                    }
+                ]
+            }
+        }
+    },
+
+    "MissingDeviceReplicationLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Metadata": {
+          "cfn_nag": {
+              "rules_to_suppress": [
+                  {
+                      "id": "W89",
+                      "reason": "Lambda function needs access to public endpoints."
+                  },
+                  {
+                      "id": "W92",
+                      "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                  }
+              ]
+          }
+      },
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+             "Fn::Sub": [
+                "${S3Bucket}-${AWS::Region}",
+                 {
+                   "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                 }
+             ]
+          },
+          "S3Key": {
+             "Fn::Sub": [
+                "${Solution}/${Version}/iot-dr-missing-device-replication.zip",
+                 {
+                   "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                   "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                 }
+             ]
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "DYNAMODB_ERROR_TABLE": {"Ref": "ThingErrorsDynamoDBTable"}
+          }
+        },
+        "Handler": "lambda_function.lambda_handler",
+        "Layers": [{"Ref": "IoTDRLambdaLayer"}],
+        "Role": { "Fn::GetAtt": ["SFNLambdaIoTReplicationRole", "Arn"] },
+        "Runtime": "python3.8",
+        "MemorySize" : 512,
+        "Timeout": 600,
+        "TracingConfig": { "Mode": "Active" },
+        "Tags": [
+          {"Key": "Solution", "Value": "IoTDR "}
+        ]
+      }
+    },
+
+    "MissingDeviceLambdaScheduledRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "Schedule for missing post provisioning devices",
+        "ScheduleExpression": "rate(30 minutes)",
+        "State": "ENABLED",
+        "Targets": [{
+          "Arn": { "Fn::GetAtt": ["MissingDeviceReplicationLambdaFunction", "Arn"] },
+          "Id": "MissingDeviceReplicationLambdaFunctionV1"
+        }]
+      }
+    },
+
+    "PermissionForEventsToInvokeLambda": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": { "Ref": "MissingDeviceReplicationLambdaFunction" },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "events.amazonaws.com",
+        "SourceArn": { "Fn::GetAtt": ["MissingDeviceLambdaScheduledRule", "Arn"] }
+      }
+    },
+
+    "DynamoTriggerLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Metadata": {
+          "cfn_nag": {
+              "rules_to_suppress": [
+                  {
+                      "id": "W89",
+                      "reason": "Lambda function needs access to public endpoints."
+                  },
+                  {
+                      "id": "W92",
+                      "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                  }
+              ]
+          }
+      },
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+             "Fn::Sub": [
+                "${S3Bucket}-${AWS::Region}",
+                 {
+                   "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                 }
+             ]
+          },
+          "S3Key": {
+             "Fn::Sub": [
+                "${Solution}/${Version}/sfn-iot-mr-dynamo-trigger.zip",
+                 {
+                   "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                   "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                 }
+             ]
+          }
+        },
+        "Environment": {
+          "Variables" : {
+            "STATEMACHINE_ARN": { "Ref": "ProvisioningStateMachine" }
+          }
+        },
+        "Handler": "lambda_function.lambda_handler",
+        "Role": { "Fn::GetAtt": ["LambdaDynamoTriggerRole", "Arn"] },
+        "Runtime": "python3.8",
+        "MemorySize" : 256,
+        "Timeout": 30,
+        "TracingConfig": { "Mode": "Active" },
+        "Tags": [
+          {"Key": "Solution", "Value": "IoTDR "}
+        ]
+      }
+    },
+
+    "SFNShadowSyncerLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Metadata": {
+          "cfn_nag": {
+              "rules_to_suppress": [
+                  {
+                      "id": "W89",
+                      "reason": "Lambda function needs access to public endpoints."
+                  },
+                  {
+                      "id": "W92",
+                      "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                  }
+              ]
+          }
+      },
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+             "Fn::Sub": [
+                "${S3Bucket}-${AWS::Region}",
+                 {
+                   "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                 }
+             ]
+          },
+          "S3Key": {
+             "Fn::Sub": [
+                "${Solution}/${Version}/sfn-iot-mr-shadow-syncer.zip",
+                 {
+                   "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                   "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                 }
+             ]
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "IOT_ENDPOINT_PRIMARY": {"Ref": "IoTEndpointPrimary"},
+            "IOT_ENDPOINT_SECONDARY": {"Ref": "IoTEndpointSecondary"}
+          }
+        },
+        "Handler": "lambda_function.lambda_handler",
+        "Layers": [{"Ref": "IoTDRLambdaLayer"}],
+        "Role": { "Fn::GetAtt": ["SFNLambdaIoTReplicationRole", "Arn"] },
+        "Runtime": "python3.8",
+        "MemorySize" : 256,
+        "Timeout": 240,
+        "TracingConfig": { "Mode": "Active" },
+        "Tags": [
+          {"Key": "Solution", "Value": "IoTDR "}
+        ]
+      }
+    },
+
+    "SFNThingCrudLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Metadata": {
+          "cfn_nag": {
+              "rules_to_suppress": [
+                  {
+                      "id": "W89",
+                      "reason": "Lambda function needs access to public endpoints."
+                  },
+                  {
+                      "id": "W92",
+                      "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                  }
+              ]
+          }
+      },
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+             "Fn::Sub": [
+                "${S3Bucket}-${AWS::Region}",
+                 {
+                   "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                 }
+             ]
+          },
+          "S3Key": {
+             "Fn::Sub": [
+                "${Solution}/${Version}/sfn-iot-mr-thing-crud.zip",
+                 {
+                   "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                   "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                 }
+             ]
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "DYNAMODB_ERROR_TABLE": {"Ref": "ThingErrorsDynamoDBTable"},
+            "IOT_ENDPOINT_PRIMARY": {"Ref": "IoTEndpointPrimary"},
+            "IOT_ENDPOINT_SECONDARY": {"Ref": "IoTEndpointSecondary"}
+          }
+        },
+        "Handler": "lambda_function.lambda_handler",
+        "Layers": [{"Ref": "IoTDRLambdaLayer"}],
+        "Role": { "Fn::GetAtt": ["SFNLambdaIoTReplicationRole", "Arn"] },
+        "Runtime": "python3.8",
+        "MemorySize" : 256,
+        "Timeout": 240,
+        "TracingConfig": { "Mode": "Active" },
+        "Tags": [
+          {"Key": "Solution", "Value": "IoTDR "}
+        ]
+      }
+    },
+
+    "SFNThingTypeCrudLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Metadata": {
+          "cfn_nag": {
+              "rules_to_suppress": [
+                  {
+                      "id": "W89",
+                      "reason": "Lambda function needs access to public endpoints."
+                  },
+                  {
+                      "id": "W92",
+                      "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                  }
+              ]
+          }
+      },
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+             "Fn::Sub": [
+                "${S3Bucket}-${AWS::Region}",
+                 {
+                   "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                 }
+             ]
+          },
+          "S3Key": {
+             "Fn::Sub": [
+                "${Solution}/${Version}/sfn-iot-mr-thing-type-crud.zip",
+                 {
+                   "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                   "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                 }
+             ]
+          }
+        },
+        "Handler": "lambda_function.lambda_handler",
+        "Role": { "Fn::GetAtt": ["SFNLambdaIoTReplicationRole", "Arn"] },
+        "Runtime": "python3.8",
+        "MemorySize" : 256,
+        "Timeout": 240,
+        "TracingConfig": { "Mode": "Active" },
+        "Tags": [
+          {"Key": "Solution", "Value": "IoTDR "}
+        ]
+      }
+    },
+
+    "SFNThingGroupCrudLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Metadata": {
+          "cfn_nag": {
+              "rules_to_suppress": [
+                  {
+                      "id": "W89",
+                      "reason": "Lambda function needs access to public endpoints."
+                  },
+                  {
+                      "id": "W92",
+                      "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                  }
+              ]
+          }
+      },
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+             "Fn::Sub": [
+                "${S3Bucket}-${AWS::Region}",
+                 {
+                   "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                 }
+             ]
+          },
+          "S3Key": {
+             "Fn::Sub": [
+                "${Solution}/${Version}/sfn-iot-mr-thing-group-crud.zip",
+                 {
+                   "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                   "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                 }
+             ]
+          }
+        },
+        "Handler": "lambda_function.lambda_handler",
+        "Role": { "Fn::GetAtt": ["SFNLambdaIoTReplicationRole", "Arn"] },
+        "Runtime": "python3.8",
+        "MemorySize" : 256,
+        "Timeout": 240,
+        "TracingConfig": { "Mode": "Active" },
+        "Tags": [
+          {"Key": "Solution", "Value": "IoTDR "}
+        ]
+      }
+    },
+
+    "StepFunctionsLogGroup": {
+        "Type": "AWS::Logs::LogGroup",
+        "Properties": {
+            "LogGroupName" : { "Fn::Sub": "/aws/vendedlogs/states/${AWS::StackName}-StepFunctions" },
+            "RetentionInDays": 7
+        },
+        "Metadata": {
+            "cfn_nag": {
+                "rules_to_suppress": [
+                    {
+                        "id": "W84",
+                        "reason": "Log group data is always encrypted in CloudWatch Logs. https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/encrypt-log-data-kms.html"
+                    }
+                ]
+            }
+        }
+    },
+
+    "ProvisioningStateMachine": {
+       "Type": "AWS::StepFunctions::StateMachine",
+          "Properties": {
+            "LoggingConfiguration": {
+                 "Destinations" : [ {
+                   "CloudWatchLogsLogGroup" : {
+                     "LogGroupArn" : {"Fn::GetAtt": ["StepFunctionsLogGroup", "Arn"]}
+                   }
+                 } ],
+                 "IncludeExecutionData": true,
+                 "Level": "ALL"
+             },
+             "DefinitionString" : {
+               "Fn::Join": [ "",
+                  [
+                    "{\n",
+                    "  \"StartAt\": \"ChoiceEventType\",\n",
+                    "  \"States\": {\n",
+                    "    \"ChoiceEventType\": {\n",
+                    "      \"Type\" : \"Choice\",\n",
+                    "      \"Choices\": [\n",
+                    "        {\n",
+                    "          \"Variable\": \"$.NewImage.eventType.S\",\n",
+                    "          \"StringEquals\": \"THING_EVENT\",\n",
+                    "          \"Next\": \"ThingCrud\"\n",
+                    "        },\n",
+                    "        {\n",
+                    "          \"Variable\": \"$.NewImage.eventType.S\",\n",
+                    "          \"StringEquals\": \"SHADOW_EVENT\",\n",
+                    "          \"Next\": \"ShadowSyncer\"\n",
+                    "        },\n",
+                    "        {\n",
+                    "          \"Or\": [\n",
+                    "             {\n",
+                    "              \"Variable\": \"$.NewImage.eventType.S\",\n",
+                    "              \"StringEquals\": \"THING_TYPE_EVENT\"\n",
+                    "            },\n",
+                    "            {\n",
+                    "              \"Variable\": \"$.NewImage.eventType.S\",\n",
+                    "              \"StringEquals\": \"THING_TYPE_ASSOCIATION_EVENT\"\n",
+                    "            }\n",
+                    "        ],\n",
+                    "        \"Next\": \"ThingTypeCrud\"\n",
+                    "        },\n",
+                    "        {\n",
+                    "          \"Or\": [\n",
+                    "             {\n",
+                    "              \"Variable\": \"$.NewImage.eventType.S\",\n",
+                    "              \"StringEquals\": \"THING_GROUP_EVENT\"\n",
+                    "            },\n",
+                    "            {\n",
+                    "              \"Variable\": \"$.NewImage.eventType.S\",\n",
+                    "              \"StringEquals\": \"THING_GROUP_MEMBERSHIP_EVENT\"\n",
+                    "            }\n",
+                    "        ],\n",
+                    "        \"Next\": \"ThingGroupCrud\"\n",
+                    "        }\n",
+                    "      ],\n",
+                    "      \"Default\": \"DefaultState\"\n",
+                    "    },\n",
+                    "    \"ThingCrud\": {\n",
+                    "      \"Type\" : \"Task\",\n",
+                    "      \"Resource\": \"",{ "Fn::GetAtt": ["SFNThingCrudLambdaFunction", "Arn"] },"\",\n",
+                    "      \"End\": true,\n",
+                    "      \"Retry\": [ {\n",
+                    "        \"ErrorEquals\": [ \"ThingCrudException\", \"Lambda.Unknown\", \"Lambda.TooManyRequestsException\", \"Lambda.ServiceException\", \"Lambda.AWSLambdaException\", \"Lambda.SdkClientException\" ],\n",
+                    "        \"IntervalSeconds\": 30,\n",
+                    "        \"BackoffRate\": 3.0,\n",
+                    "        \"MaxAttempts\": 10\n",
+                    "     } ]\n",
+                    "    },\n",
+                    "    \"ShadowSyncer\": {\n",
+                    "      \"Type\" : \"Task\",\n",
+                    "      \"Resource\": \"",{ "Fn::GetAtt": ["SFNShadowSyncerLambdaFunction", "Arn"] },"\",\n",
+                    "      \"End\": true,\n",
+                    "      \"Retry\": [ {\n",
+                    "        \"ErrorEquals\": [ \"ShadowSyncerException\", \"Lambda.Unknown\", \"Lambda.TooManyRequestsException\", \"Lambda.ServiceException\", \"Lambda.AWSLambdaException\", \"Lambda.SdkClientException\" ],\n",
+                    "        \"IntervalSeconds\": 30,\n",
+                    "        \"BackoffRate\": 3.0,\n",
+                    "        \"MaxAttempts\": 10\n",
+                    "     } ]\n",
+                    "    },\n",
+                    "    \"ThingTypeCrud\": {\n",
+                    "      \"Type\" : \"Task\",\n",
+                    "      \"Resource\": \"",{ "Fn::GetAtt": ["SFNThingTypeCrudLambdaFunction", "Arn"] },"\",\n",
+                    "      \"End\": true,\n",
+                    "      \"Retry\": [ {\n",
+                    "        \"ErrorEquals\": [ \"ThingTypeCrudException\", \"Lambda.Unknown\", \"Lambda.TooManyRequestsException\", \"Lambda.ServiceException\", \"Lambda.AWSLambdaException\", \"Lambda.SdkClientException\" ],\n",
+                    "        \"IntervalSeconds\": 30,\n",
+                    "        \"BackoffRate\": 3.0,\n",
+                    "        \"MaxAttempts\": 10\n",
+                    "     } ]\n",
+                    "    },\n",
+                    "    \"ThingGroupCrud\": {\n",
+                    "      \"Type\" : \"Task\",\n",
+                    "      \"Resource\": \"",{ "Fn::GetAtt": ["SFNThingGroupCrudLambdaFunction", "Arn"] },"\",\n",
+                    "      \"End\": true,\n",
+                    "      \"Retry\": [ {\n",
+                    "        \"ErrorEquals\": [ \"ThingGroupCrudException\", \"Lambda.Unknown\", \"Lambda.TooManyRequestsException\", \"Lambda.ServiceException\", \"Lambda.AWSLambdaException\", \"Lambda.SdkClientException\" ],\n",
+                    "        \"IntervalSeconds\": 30,\n",
+                    "        \"BackoffRate\": 3.0,\n",
+                    "        \"MaxAttempts\": 10\n",
+                    "     } ]\n",
+                    "    },\n",
+                    "    \"DefaultState\": {\n",
+                    "      \"Type\": \"Fail\",\n",
+                    "      \"Error\": \"DefaultStateError\",\n",
+                    "      \"Cause\": \"No Matches!\"\n",
+                    "    }\n",
+                    "  }\n",
+                    "}\n"
+                  ]
+               ]
+             },
+             "RoleArn" : { "Fn::GetAtt": ["StateMachineRole", "Arn"] },
+             "Tags": [
+               {"Key": "Solution", "Value": "IoTDR "}
+             ]
+         }
+     }
+
+
+  },
+
+  "Outputs" : {
+    "CrossRegionLambdaFunctionArn" : {
+      "Description" : "Arn of the cross region Lambda function which subscribes to SNS",
+      "Value" : { "Fn::GetAtt": ["CrossRegionLambdaFunction", "Arn"] }
+    },
+    "GlobalDynamoDBTableName" : {
+      "Description" : "Name of the global DynamoDB table",
+      "Value" : {"Ref": "GlobalDynamoDBTableName"}
+    },
+    "JITRLambdaFunctionName" : {
+      "Description" : "Name of the JITR Lambda function",
+      "Value" : {"Ref": "JITRLambdaFunction"}
+    },
+    "IoTDRLambdaLayerVersionArn" : {
+      "Description" : "Version Arn of the Lambda layer",
+      "Value" : {"Ref": "IoTDRLambdaLayer"}
+    },
+    "SFNLogGroupName" : {
+      "Description" : "Name of the step functions log group",
+      "Value" : {"Ref": "StepFunctionsLogGroup"}
+    },
+    "SFNShadowSyncerLambdaFunctionName" : {
+      "Description" : "Name of the shadow syncer Lambda function",
+      "Value" : {"Ref": "SFNShadowSyncerLambdaFunction"}
+    },
+    "SFNThingCrudLambdaFunctionName" : {
+      "Description" : "Name of the thing crud Lambda function",
+      "Value" : {"Ref": "SFNThingCrudLambdaFunction"}
+    },
+    "SFNThingTypeCrudLambdaFunctionName" : {
+      "Description" : "Name of the thing type crud Lambda function",
+      "Value" : {"Ref": "SFNThingTypeCrudLambdaFunction"}
+    },
+    "SFNThingGroupCrudLambdaFunctionName" : {
+      "Description" : "Name of the thing group crud Lambda function",
+      "Value" : {"Ref": "SFNThingGroupCrudLambdaFunction"}
+    },
+    "StateMachineARN" : {
+      "Description" : "ARN of the statemachine",
+      "Value" : { "Ref": "ProvisioningStateMachine" }
+    },
+    "ThingErrorsDynamoDBTableName" : {
+      "Description" : "Name of the thing errors table",
+      "Value" : {"Ref": "ThingErrorsDynamoDBTable"}
+    }
+  }
+}

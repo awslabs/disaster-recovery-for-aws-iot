@@ -1,0 +1,36 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "$(date) - installing aws cli v2"
+      - which aws
+      - rm -f $(which aws)
+      - hash -r
+      - CWD=$(pwd)
+      - echo "$CWD"
+      - cd /tmp/
+      - wget --quiet https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+      - unzip -q awscli-exe-linux-x86_64.zip
+      - ./aws/install --update
+      - rm -rf aws
+      - rm -f awscli-exe-linux-x86_64.zip
+      - aws --version
+      - cd $CWD
+  pre_build:
+    commands:
+      - echo "$(date) - starting pre_build in directory $(pwd)"
+      - #env | sort
+      - echo "BUCKET_RESOURCES $BUCKET_RESOURCES"
+      - ls -la
+      - chmod +x launch-solution-code-build.sh
+  build:
+    commands:
+      - echo "$(date) - launching IoT DR solution from directory $(pwd)"
+      - ./launch-solution-code-build.sh
+  post_build:
+    commands:
+      - echo "$(date) - finished launching IoT DR solution from directory $(pwd)"

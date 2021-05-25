@@ -1,0 +1,452 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "AWS CloudFormation template for disaster recovery for AWS IoT. Primary region.",
+
+  "Mappings" : {
+    "CONFIG" : {
+        "S3GlobalBucket": { "Name": "solutions" },
+        "Solution": { "Name": "disaster-recovery-for-aws-iot" },
+        "Version": { "Name": "v1.0.0"}
+    }
+  },
+
+  "Parameters" : {
+    "GlobalDynamoDBTableName" : {
+      "Description" : "Name for the global DynamodDB table. You must use the same table name in the primary and secondary region!",
+      "Type" : "String",
+      "Default": "IoTDRGlobalTable",
+      "MinLength" : "3",
+      "MaxLength" : "255",
+      "AllowedPattern" : "^[a-zA-Z0-9_.-]+$"
+    }
+  },
+
+  "Resources" : {
+
+    "ProvisioningDynamoDBTable" : {
+      "Type" : "AWS::DynamoDB::Table",
+          "Properties" : {
+            "BillingMode" : "PAY_PER_REQUEST",
+            "SSESpecification": {"SSEEnabled": true},
+            "TableName": {"Ref": "GlobalDynamoDBTableName"},
+            "TimeToLiveSpecification": {
+              "AttributeName" : "expires",
+              "Enabled" : true
+            },
+            "AttributeDefinitions" : [
+              {
+                  "AttributeName": "uuid",
+                  "AttributeType": "S"
+              }
+            ],
+            "KeySchema" : [
+              {
+                  "KeyType": "HASH",
+                  "AttributeName": "uuid"
+              }
+            ],
+            "StreamSpecification": {
+              "StreamViewType" : "NEW_AND_OLD_IMAGES"
+          },
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        },
+        "Metadata": {
+            "cfn_nag": {
+                "rules_to_suppress": [
+                    {
+                        "id": "W28",
+                        "reason": "Explicit name for global DynamoDB table required."
+                    },
+                    {
+                        "id": "W78",
+                        "reason": "Backup not required as table is used for replication and not long term storage."
+                    }
+                ]
+            }
+        }
+    },
+
+    "EventsToDynamoV2Rule": {
+      "Type": "AWS::IoT::TopicRule",
+      "Properties": {
+        "TopicRulePayload": {
+          "AwsIotSqlVersion": "2016-03-23",
+          "RuleDisabled": false,
+          "Sql": "SELECT newuuid() as uuid, (timestamp()/1000)+172800 as expires, * FROM '$aws/events/#' WHERE topic(3) = 'thing' OR topic(3) = 'thingGroup' OR topic(3) = 'thingType' OR topic(3) = 'thingTypeAssociation' OR topic(3) = 'thingGroupMembership' OR topic(3) = 'thingGroupHierarchy'",
+          "Actions": [{
+            "DynamoDBv2": {
+                "PutItem": {
+                    "TableName": {"Ref": "GlobalDynamoDBTableName"}
+                },
+                "RoleArn": { "Fn::GetAtt" : ["IoTAccessServicesRole", "Arn"] }
+              }
+            }]
+          }
+        }
+    },
+
+    "ShadowToDynamoV2Rule": {
+      "Type": "AWS::IoT::TopicRule",
+      "Properties": {
+        "TopicRulePayload": {
+          "AwsIotSqlVersion": "2016-03-23",
+          "RuleDisabled": false,
+          "Sql": "SELECT newuuid() as uuid, (timestamp()/1000)+172800 as expires, topic(3) as thing_name, 'SHADOW_EVENT' as eventType, 'SHADOW_UPDATED' as operation, * FROM '$aws/things/+/shadow/update/accepted'",
+          "Actions": [{
+            "DynamoDBv2": {
+                "PutItem": {
+                    "TableName": {"Ref": "GlobalDynamoDBTableName"}
+                },
+                "RoleArn": { "Fn::GetAtt" : ["IoTAccessServicesRole", "Arn"] }
+              }
+            }]
+          }
+        }
+    },
+
+    "BasicIoTPolicy": {
+         "Type": "AWS::IoT::Policy",
+         "Properties": {
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": ["iot:Connect"],
+                  "Resource": [
+                    {"Fn::Join": [":", ["arn:aws:iot", {"Ref": "AWS::Region"}, { "Ref": "AWS::AccountId" }, "client/${iot:Connection.Thing.ThingName}"]]},
+                    {"Fn::Join": [":", ["arn:aws:iot", {"Ref": "AWS::Region"}, { "Ref": "AWS::AccountId" }, "client/${iot:Connection.Thing.ThingName}-*"]]}
+                  ]
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "iot:Publish"
+                    ],
+                    "Resource": [
+                        {"Fn::Join": [":", ["arn:aws:iot", {"Ref": "AWS::Region"}, { "Ref": "AWS::AccountId" }, "topic/dr/${iot:Connection.Thing.ThingName}/*"]]},
+                        {"Fn::Join": [":", ["arn:aws:iot", {"Ref": "AWS::Region"}, { "Ref": "AWS::AccountId" }, "topic/$aws/things/${iot:Connection.Thing.ThingName}/shadow/*"]]}
+                    ]
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "iot:Receive"
+                    ],
+                    "Resource": [
+                        {"Fn::Join": [":", ["arn:aws:iot", {"Ref": "AWS::Region"}, { "Ref": "AWS::AccountId" }, "topic/dr/${iot:Connection.Thing.ThingName}/*"]]},
+                        {"Fn::Join": [":", ["arn:aws:iot", {"Ref": "AWS::Region"}, { "Ref": "AWS::AccountId" }, "topic/$aws/things/${iot:Connection.Thing.ThingName}/shadow/*"]]}
+                    ]
+                },
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "iot:Subscribe"
+                    ],
+                    "Resource": [
+                        {"Fn::Join": [":", ["arn:aws:iot", {"Ref": "AWS::Region"}, { "Ref": "AWS::AccountId" }, "topicfilter/dr/${iot:Connection.Thing.ThingName}/*"]]},
+                        {"Fn::Join": [":", ["arn:aws:iot", {"Ref": "AWS::Region"}, { "Ref": "AWS::AccountId" }, "topicfilter/$aws/things/${iot:Connection.Thing.ThingName}/shadow/*"]]}
+                    ]
+                }
+              ]
+            }
+         }
+      },
+
+    "JITRRule": {
+      "Type": "AWS::IoT::TopicRule",
+      "Properties": {
+        "TopicRulePayload": {
+          "AwsIotSqlVersion": "2016-03-23",
+          "RuleDisabled": false,
+          "Sql": "SELECT * FROM '$aws/events/certificates/registered/#' WHERE certificateStatus = \"PENDING_ACTIVATION\"",
+          "Actions": [{
+            "Lambda": {
+              "FunctionArn": { "Fn::GetAtt": ["JITRLambdaFunction", "Arn"] }
+              }
+            }]
+          }
+        }
+    },
+
+    "IoTAccessServicesRole": {
+       "Type": "AWS::IAM::Role",
+       "Properties": {
+          "AssumeRolePolicyDocument": {
+             "Statement": [ {
+                "Effect": "Allow",
+                "Principal": {
+                   "Service": [ "iot.amazonaws.com" ]
+                },
+                "Action": [ "sts:AssumeRole" ]
+             } ]
+          },
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["", ["IoTBulkProvisioningInlinePolicy-", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement":[
+                   {
+                      "Effect": "Allow",
+                      "Action": [
+                          "logs:CreateLogGroup",
+                          "logs:CreateLogStream",
+                          "logs:PutLogEvents",
+                          "logs:PutMetricFilter",
+                          "logs:PutRetentionPolicy"
+                      ],
+                      "Resource": [
+                        { "Fn::Sub": "arn:aws:logs:*:${AWS::AccountId}:log-group:*:log-stream:*" }
+                      ]
+                   },
+                   {
+                      "Effect": "Allow",
+                      "Action": "dynamodb:PutItem",
+                      "Resource": { "Fn::GetAtt": ["ProvisioningDynamoDBTable", "Arn"] }
+                   }
+                ]
+              }
+             }
+           ],
+          "Path": "/service-role/",
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        }
+    },
+
+    "IoTBulkProvisioningRole": {
+       "Type": "AWS::IAM::Role",
+       "Properties": {
+          "AssumeRolePolicyDocument": {
+             "Statement": [ {
+                "Effect": "Allow",
+                "Principal": {
+                   "Service": [ "iot.amazonaws.com" ]
+                },
+                "Action": [ "sts:AssumeRole" ]
+             } ]
+          },
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["", ["IoTBulkProvisioningInlinePolicy-", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement":[
+                   {
+                       "Effect": "Allow",
+                       "Action": [
+                           "s3:GetObject",
+                           "s3:GetObjectAcl"
+                       ],
+                       "Resource": "*"
+                   },
+                   {
+                       "Effect": "Allow",
+                       "Action": [
+                           "iot:AddThingToThingGroup",
+                           "iot:AttachPolicy",
+                           "iot:AttachPrincipalPolicy",
+                           "iot:AttachThingPrincipal",
+                           "iot:CreateCertificateFromCsr",
+                           "iot:CreatePolicy",
+                           "iot:CreateThing",
+                           "iot:DescribeCertificate",
+                           "iot:DescribeThing",
+                           "iot:DescribeThingGroup",
+                           "iot:DescribeThingType",
+                           "iot:GetPolicy",
+                           "iot:ListAttachedPolicies",
+                           "iot:ListPolicyPrincipals",
+                           "iot:ListPrincipalPolicies",
+                           "iot:ListPrincipalThings",
+                           "iot:ListTargetsForPolicy",
+                           "iot:ListThingGroupsForThing",
+                           "iot:ListThingPrincipals",
+                           "iot:RegisterCertificate",
+                           "iot:RegisterThing",
+                           "iot:UpdateCertificate",
+                           "iot:UpdateThing",
+                           "iot:UpdateThingGroupsForThing"
+                       ],
+                       "Resource": [
+                           "*"
+                       ]
+                   }
+                ]
+              }
+             }
+           ],
+           "Path": "/service-role/",
+           "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        },
+        "Metadata": {
+            "cfn_nag": {
+                "rules_to_suppress": [
+                    {
+                        "id": "W11",
+                        "reason": "Not all API do support resource level based permissions"
+                    }
+                ]
+            }
+        }
+    },
+
+    "JITRLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Metadata": {
+          "cfn_nag": {
+              "rules_to_suppress": [
+                  {
+                      "id": "W89",
+                      "reason": "Lambda function needs access to public endpoints."
+                  },
+                  {
+                      "id": "W92",
+                      "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                  }
+              ]
+          }
+      },
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+             "Fn::Sub": [
+                "${S3Bucket}-${AWS::Region}",
+                 {
+                   "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                 }
+             ]
+          },
+          "S3Key": {
+             "Fn::Sub": [
+                "${Solution}/${Version}/iot-mr-jitr.zip",
+                 {
+                   "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                   "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                 }
+             ]
+          }
+        },
+        "Handler": "lambda_function.lambda_handler",
+        "Role": { "Fn::GetAtt": ["JITRLambdaRole", "Arn"] },
+        "Runtime": "python3.8",
+        "MemorySize" : 256,
+        "Timeout": 30,
+        "TracingConfig": { "Mode": "Active" },
+        "Tags": [
+          {"Key": "Solution", "Value": "IoTDR "}
+        ]
+      }
+    },
+
+    "JITRLambdaPermission": {
+        "Type" : "AWS::Lambda::Permission",
+        "Properties" : {
+            "Action" : "lambda:InvokeFunction",
+            "FunctionName" : { "Fn::GetAtt": ["JITRLambdaFunction", "Arn"] },
+            "Principal" : "iot.amazonaws.com",
+            "SourceAccount" : { "Ref": "AWS::AccountId" },
+            "SourceArn" : { "Fn::GetAtt" : ["JITRRule", "Arn"] }
+          }
+      },
+
+    "JITRLambdaRole": {
+       "Type": "AWS::IAM::Role",
+       "Properties": {
+          "AssumeRolePolicyDocument": {
+             "Statement": [ {
+                "Effect": "Allow",
+                "Principal": {
+                   "Service": [ "lambda.amazonaws.com" ]
+                },
+                "Action": [ "sts:AssumeRole" ]
+             } ]
+          },
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["", ["JITRLambdaPolicy-", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement":[
+                   {
+                     "Effect": "Allow",
+                     "Action": [
+                       "logs:CreateLogGroup",
+                       "logs:CreateLogStream",
+                       "logs:PutLogEvents"
+                     ],
+                     "Resource": "arn:aws:logs:*:*:*"
+                   },
+                   {
+                      "Effect": "Allow",
+                      "Action": [
+                          "xray:PutTraceSegments",
+                          "xray:PutTelemetryRecords"
+                      ],
+                      "Resource": [
+                          "*"
+                      ]
+                   },
+                   {
+                      "Effect": "Allow",
+                      "Action": [
+                          "iot:AttachThingPrincipal",
+                          "iot:GetPolicy",
+                          "iot:CreateThing",
+                          "iot:AttachPolicy",
+                          "iot:DescribeThing",
+                          "iot:DescribeCertificate",
+                          "iot:CreatePolicy",
+                          "iot:UpdateCertificate"
+                      ],
+                      "Resource": "*"
+                   }
+                ]
+              }
+             }
+           ],
+          "Path": "/service-role/",
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        },
+        "Metadata": {
+            "cfn_nag": {
+                "rules_to_suppress": [
+                    {
+                        "id": "W11",
+                        "reason": "Not all API do support resource level based permissions"
+                    }
+                ]
+            }
+        }
+    }
+  },
+
+  "Outputs" : {
+    "BasicIoTPolicyName" : {
+      "Description" : "Name of a basic iot policy",
+      "Value" : {"Ref": "BasicIoTPolicy"}
+    },
+    "GlobalDynamoDBTableName" : {
+      "Description" : "Name of the global DynamoDB table",
+      "Value" : {"Ref": "GlobalDynamoDBTableName"}
+    },
+    "IoTAccessServicesRoleArn" : {
+      "Description" : "Arn of the IAM role for IoT topic rule actions and IoT logging",
+      "Value" : {"Fn::GetAtt" : ["IoTAccessServicesRole", "Arn"] }
+    },
+    "IoTBulkProvisioningRoleArn" : {
+      "Description" : "Arn of the role for IoT bulk provisioning",
+      "Value" : {"Fn::GetAtt" : ["IoTBulkProvisioningRole", "Arn"] }
+    },
+    "JITRLambdaFunctionName" : {
+      "Description" : "Name of the JITR Lambda function",
+      "Value" : {"Ref": "JITRLambdaFunction"}
+    }
+  }
+}

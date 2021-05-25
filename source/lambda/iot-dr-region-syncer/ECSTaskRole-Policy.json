@@ -1,0 +1,85 @@
+Trust policy
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+
+Inline Policy
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": [
+                "dynamodb:DeleteItem",
+                "dynamodb:DescribeTable",
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:Query",
+                "dynamodb:UpdateItem"
+            ],
+            "Resource": "*",
+            "Effect": "Allow"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+            ],
+            "Resource": "arn:aws:logs:*:*:*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "iot:AddThingToThingGroup",
+                "iot:AttachPolicy",
+                "iot:AttachThingPrincipal",
+                "iot:CreateDynamicThingGroup",
+                "iot:CreatePolicy",
+                "iot:CreateThing",
+                "iot:CreateThingGroup",
+                "iot:CreateThingType",
+                "iot:DeleteCertificate",
+                "iot:DeleteDynamicThingGroup",
+                "iot:DeletePolicy",
+                "iot:DeleteThing",
+                "iot:DeleteThingGroup",
+                "iot:DeleteThingType",
+                "iot:DeprecateThingType",
+                "iot:DescribeCertificate",
+                "iot:DescribeThing",
+                "iot:DescribeThingGroup",
+                "iot:DescribeThingType",
+                "iot:DetachPolicy",
+                "iot:DetachThingPrincipal",
+                "iot:GetIndexingConfiguration",
+                "iot:GetPolicy",
+                "iot:ListAttachedPolicies",
+                "iot:ListPrincipalPolicies",
+                "iot:ListPrincipalThings",
+                "iot:ListThingGroupsForThing",
+                "iot:ListThingPrincipals",
+                "iot:ListThings",
+                "iot:ListThingTypes",
+                "iot:ListThingsInThingGroup",
+                "iot:RegisterCertificateWithoutCA",
+                "iot:RemoveThingFromThingGroup",
+                "iot:UpdateCertificate",
+                "iot:UpdateThing",
+                "iot:UpdateThingGroup",
+                "iot:UpdateThingShadow"
+            ],
+            "Resource": "*"
+        }
+    ]
+}

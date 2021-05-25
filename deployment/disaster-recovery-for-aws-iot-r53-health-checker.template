@@ -1,0 +1,616 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "AWS CloudFormation template for disaster recovery for AWS IoT. Amazon Route 53 health check.",
+
+  "Mappings" : {
+    "CONFIG" : {
+        "S3GlobalBucket": { "Name": "solutions" },
+        "Solution": { "Name": "disaster-recovery-for-aws-iot" },
+        "Version": { "Name": "v1.0.0"}
+    }
+  },
+
+  "Parameters" : {
+    "S3BucketForLambda" : {
+      "Description" : "S3 bucket where you copied the lambda installation packages to.",
+      "Type" : "String"
+    },
+    "CreateR53HealthCheck": {
+        "AllowedValues": [
+            "yes",
+            "no"
+        ],
+        "Default": "no",
+        "Description": "If true create a health check for R53",
+        "Type": "String"
+    }
+  },
+
+  "Conditions": {
+      "CreateHealthCheck": {
+          "Fn::Equals": [
+              {
+                  "Ref": "CreateR53HealthCheck"
+              },
+              "yes"
+          ]
+      }
+  },
+
+  "Resources": {
+
+        "CreateLambdaR53CheckerRole": {
+           "Type": "AWS::IAM::Role",
+           "Properties": {
+              "AssumeRolePolicyDocument": {
+                 "Statement": [ {
+                    "Effect": "Allow",
+                    "Principal": {
+                       "Service": [ "lambda.amazonaws.com" ]
+                    },
+                    "Action": [ "sts:AssumeRole" ]
+                 } ]
+              },
+              "Policies": [ {
+                 "PolicyName": {"Fn::Join": ["-", ["CreateLambdaR53CheckerPolicy", {"Ref": "AWS::Region"} ]]},
+                 "PolicyDocument": {
+                     "Version":"2012-10-17",
+                     "Statement":[
+                         {
+                           "Effect": "Allow",
+                           "Action": [
+                             "logs:CreateLogGroup",
+                             "logs:CreateLogStream",
+                             "logs:PutLogEvents"
+                           ],
+                           "Resource": "arn:aws:logs:*:*:*"
+                         },
+                         {
+                            "Effect": "Allow",
+                            "Action": [
+                                "xray:PutTraceSegments",
+                                "xray:PutTelemetryRecords"
+                            ],
+                            "Resource": [
+                                "*"
+                            ]
+                         },
+                         {
+                            "Effect": "Allow",
+                            "Action": [
+                                "iot:AttachPolicy",
+                                "iot:AttachPrincipalPolicy",
+                                "iot:AttachThingPrincipal",
+                                "iot:CreateKeysAndCertificate",
+                                "iot:CreatePolicy",
+                                "iot:CreateThing",
+                                "iot:DescribeEndpoint",
+                                "iot:DescribeThing",
+                                "iot:DetachPolicy",
+                                "iot:DetachThingPrincipal",
+                                "iot:GetPolicy",
+                                "iot:ListAttachedPolicies",
+                                "iot:ListPolicyPrincipals",
+                                "iot:ListPrincipalPolicies",
+                                "iot:ListPrincipalThings",
+                                "iot:ListTargetsForPolicy",
+                                "iot:ListThingGroupsForThing",
+                                "iot:ListThingPrincipals"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "s3:PutObject"
+                            ],
+                            "Resource": { "Fn::Sub": [ "arn:aws:s3:::${Bucket}/*", { "Bucket": {"Ref" : "S3BucketForLambda" }} ]}
+                        }
+
+                     ]
+                  }
+                 }
+               ],
+              "Path": "/service-role/",
+              "Tags": [
+                {"Key": "Solution", "Value": "IoTDR "}
+              ]
+            },
+            "Metadata": {
+                "cfn_nag": {
+                    "rules_to_suppress": [
+                        {
+                            "id": "W11",
+                            "reason": "Not all API do support resource level based permissions"
+                        }
+                    ]
+                }
+            }
+        },
+
+        "CustomCreateR53CheckerLambda": {
+          "Type": "Custom::CustomCreateR53CheckerLambda",
+          "Properties": {
+            "ServiceToken": {
+              "Fn::GetAtt": [
+                "CustomCreateR53CheckerLambdaFunction",
+                "Arn"
+              ]
+            },
+            "REGION": { "Ref": "AWS::Region" },
+            "ACCOUNT_ID": { "Ref": "AWS::AccountId" }
+          }
+        },
+
+        "CustomCreateR53CheckerLambdaFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Metadata": {
+                "cfn_nag": {
+                    "rules_to_suppress": [
+                        {
+                            "id": "W89",
+                            "reason": "Lambda function needs access to public endpoints."
+                        },
+                        {
+                            "id": "W92",
+                            "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                        }
+                    ]
+                }
+            },
+            "Properties": {
+              "Handler": "lambda_function.lambda_handler",
+              "Role": { "Fn::GetAtt" : ["CreateLambdaR53CheckerRole", "Arn"] },
+              "Code": {
+                "S3Bucket": {
+                   "Fn::Sub": [
+                      "${S3Bucket}-${AWS::Region}",
+                       {
+                         "S3Bucket": { "Fn::FindInMap" : [ "CONFIG", "S3GlobalBucket", "Name"] }
+                       }
+                   ]
+                },
+                "S3Key": {
+                   "Fn::Sub": [
+                      "${Solution}/${Version}/iot-dr-create-r53-checker.zip",
+                       {
+                         "Solution": { "Fn::FindInMap" : [ "CONFIG", "Solution", "Name"] },
+                         "Version": { "Fn::FindInMap" : [ "CONFIG", "Version", "Name"] }
+                       }
+                   ]
+                }
+              },
+              "Runtime": "python3.8",
+              "MemorySize" : 128,
+              "Timeout": 120,
+              "TracingConfig": { "Mode": "Active" },
+              "Environment": {
+                  "Variables": {
+                      "S3_BUCKET": { "Ref": "S3BucketForLambda" }
+                  }
+              },
+              "Tags": [
+                {"Key": "CloudFormation", "Value": "CustomResource "},
+                {"Key": "Solution", "Value": "IoTDR "}
+              ]
+            }
+        },
+
+        "LambdaR53CheckerRole": {
+           "Type": "AWS::IAM::Role",
+           "Properties": {
+              "AssumeRolePolicyDocument": {
+                 "Statement": [ {
+                    "Effect": "Allow",
+                    "Principal": {
+                       "Service": [ "lambda.amazonaws.com" ]
+                    },
+                    "Action": [ "sts:AssumeRole" ]
+                 } ]
+              },
+              "Policies": [ {
+                 "PolicyName": {"Fn::Join": ["-", ["LambdaR53CheckerPolicy", {"Ref": "AWS::Region"} ]]},
+                 "PolicyDocument": {
+                     "Version":"2012-10-17",
+                     "Statement":[
+                         {
+                           "Effect": "Allow",
+                           "Action": [
+                             "logs:CreateLogGroup",
+                             "logs:CreateLogStream",
+                             "logs:PutLogEvents"
+                           ],
+                           "Resource": "arn:aws:logs:*:*:*"
+                         },
+                         {
+                            "Effect": "Allow",
+                            "Action": [
+                                "xray:PutTraceSegments",
+                                "xray:PutTelemetryRecords"
+                            ],
+                            "Resource": [
+                                "*"
+                            ]
+                         }
+                     ]
+                  }
+                 }
+               ],
+              "Path": "/service-role/",
+              "Tags": [
+                {"Key": "Solution", "Value": "IoTDR "}
+              ]
+            },
+            "Metadata": {
+                "cfn_nag": {
+                    "rules_to_suppress": [
+                        {
+                            "id": "W11",
+                            "reason": "Not all API do support resource level based permissions"
+                        }
+                    ]
+                }
+            }
+        },
+
+        "R53CheckerLambdaFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Metadata": {
+                "cfn_nag": {
+                    "rules_to_suppress": [
+                        {
+                            "id": "W89",
+                            "reason": "Lambda function needs access to public endpoints."
+                        },
+                        {
+                            "id": "W92",
+                            "reason": "Setting reserved concurrency might make the stack creation to fail or might jeopardize customer settings"
+                        }
+                    ]
+                }
+            },
+            "Properties": {
+              "Handler": "lambda_function.lambda_handler",
+              "Role": { "Fn::GetAtt" : ["LambdaR53CheckerRole", "Arn"] },
+              "Code": {
+                "S3Bucket": { "Ref": "S3BucketForLambda"},
+                "S3Key": "iot-dr-r53-checker.zip"
+              },
+              "Runtime": "python3.8",
+              "MemorySize" : 192,
+              "Timeout": 10,
+              "TracingConfig": { "Mode": "Active" },
+              "Environment": {
+                  "Variables": {
+                      "CA": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "CA"] },
+                      "CERT": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "CERT"] },
+                      "CLIENT_ID": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "CLIENT_ID"] },
+                      "ENDPOINT": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "ENDPOINT"] },
+                      "KEY": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "KEY"] },
+                      "QUERY_STRING": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "QUERY_STRING"] }
+                  }
+              },
+              "Tags": [
+                {"Key": "Solution", "Value": "IoTDR "}
+              ]
+            }
+        },
+
+      "LambdaPermission": {
+        "Type": "AWS::Lambda::Permission",
+        "Properties": {
+          "Action": "lambda:InvokeFunction",
+          "FunctionName": {"Fn::GetAtt": ["R53CheckerLambdaFunction", "Arn"]},
+          "Principal": "apigateway.amazonaws.com",
+          "SourceArn": {"Fn::Join": ["",
+            ["arn:aws:execute-api:", {"Ref": "AWS::Region"}, ":", {"Ref": "AWS::AccountId"}, ":", {"Ref": "IoTDRApiGw"}, "/*"]
+          ]}
+        }
+      },
+
+      "IoTDRApiGwAccountLogGroup": {
+          "Type": "AWS::Logs::LogGroup",
+          "Properties": {
+              "RetentionInDays": 7
+          },
+          "Metadata": {
+              "cfn_nag": {
+                  "rules_to_suppress": [
+                      {
+                          "id": "W84",
+                          "reason": "Log group data is always encrypted in CloudWatch Logs. https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/encrypt-log-data-kms.html"
+                      }
+                  ]
+              }
+          }
+      },
+
+      "IoTDRApiGwApiKey": {
+        "Type": "AWS::ApiGateway::ApiKey",
+        "DependsOn": [
+          "IoTDRApiGwDeployment"
+        ],
+        "Properties": {
+          "Enabled": true,
+          "StageKeys": [
+            {
+              "RestApiId": {
+                "Ref": "IoTDRApiGw"
+              },
+              "StageName": {
+                "Ref": "IoTDRRestApiGwStageV1"
+              }
+            }
+          ],
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        }
+      },
+
+      "IoTDRApiGwUsagePlan": {
+        "Type": "AWS::ApiGateway::UsagePlan",
+        "DependsOn": [
+          "IoTDRApiGwDeployment"
+        ],
+        "Properties": {
+          "UsagePlanName": "R53 usage plan name",
+          "Description": "R53 usage plan desc",
+          "ApiStages": [
+            {
+              "ApiId": {
+                "Ref": "IoTDRApiGw"
+              },
+              "Stage": {
+                "Ref": "IoTDRRestApiGwStageV1"
+              }
+            }
+          ],
+          "Throttle": {
+            "BurstLimit": 1000,
+            "RateLimit": 2000
+          },
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        }
+      },
+      "IoTDRApiGwUsagePlanKey": {
+        "Type": "AWS::ApiGateway::UsagePlanKey",
+        "Properties": {
+          "KeyId": {
+            "Ref": "IoTDRApiGwApiKey"
+          },
+          "KeyType": "API_KEY",
+          "UsagePlanId": {
+            "Ref": "IoTDRApiGwUsagePlan"
+          }
+        }
+      },
+
+    "IoTDRApiGw": {
+        "Type": "AWS::ApiGateway::RestApi",
+        "Properties": {
+            "Body": {
+                "swagger" : "2.0",
+                "info" : {
+                  "title" : "IoT DR API Gateway",
+                  "version" : "0.1"
+                },
+                "schemes" : [ "https" ],
+                "consumes": [
+                  "application/json"
+                ],
+                "produces": [
+                  "application/json"
+                ],
+                "paths" : {
+                  "/r53/health-check" : {
+                    "get" : {
+                      "parameters": [
+                        {
+                          "name": "hashme",
+                          "in": "query",
+                          "required": true,
+                          "type": "string"
+                        }
+                      ],
+                      "responses" : {
+                        "default" : {
+                          "description" : "The resource does not exist"
+                        }
+                      },
+                      "x-amazon-apigateway-request-validator": "Validate body, query string parameters, and headers",
+                      "x-amazon-apigateway-integration" : {
+                        "payloadFormatVersion" : "2.0",
+                        "type" : "aws_proxy",
+                        "httpMethod" : "POST",
+                        "uri" : {"Fn::Join": ["",
+                                            ["arn:aws:apigateway:", {"Ref": "AWS::Region"}, ":lambda:path/2015-03-31/functions/", {"Fn::GetAtt": ["R53CheckerLambdaFunction", "Arn"]}, "/invocations"]
+                                ]},
+                        "connectionType" : "INTERNET"
+                      }
+                    }
+                  }
+                },
+                "x-amazon-apigateway-request-validators": {
+                  "Validate body, query string parameters, and headers": {
+                    "validateRequestParameters": true,
+                    "validateRequestBody": true
+                  }
+                },
+                "definitions" : {
+                  "Empty" : {
+                    "type" : "object",
+                    "title" : "Empty Schema"
+                  }
+                }
+            },
+            "Tags": [
+              {"Key": "Solution", "Value": "IoTDR "}
+            ]
+        }
+    },
+
+      "IoTDRApiGwCWRole": {
+        "Type": "AWS::IAM::Role",
+        "Properties": {
+          "AssumeRolePolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Principal": { "Service": [ "apigateway.amazonaws.com" ] },
+              "Action": "sts:AssumeRole"
+            }]
+          },
+          "Path": "/service-role/",
+          "Policies": [ {
+             "PolicyName": {"Fn::Join": ["-", ["IoTDRApiGwCWInlinePolicy", {"Ref": "AWS::Region"} ]]},
+             "PolicyDocument": {
+                 "Version":"2012-10-17",
+                 "Statement":[
+                     {
+                       "Effect": "Allow",
+                       "Action": [
+                          "logs:CreateLogGroup",
+                          "logs:CreateLogStream",
+                          "logs:DescribeLogGroups",
+                          "logs:DescribeLogStreams",
+                          "logs:PutLogEvents",
+                          "logs:GetLogEvents",
+                          "logs:FilterLogEvents"
+                       ],
+                       "Resource": "arn:aws:logs:*:*:*"
+                     }
+                 ]
+              }
+             }
+           ],
+          "Tags": [
+            {"Key": "Solution", "Value": "IoTDR "}
+          ]
+        }
+      },
+
+    "IoTDRApiGwAccount": {
+      "Type": "AWS::ApiGateway::Account",
+      "Properties": {
+        "CloudWatchRoleArn": {"Fn::GetAtt": ["IoTDRApiGwCWRole", "Arn"] }
+      }
+    },
+
+    "IoTDRRestApiGwStageV1": {
+        "Type": "AWS::ApiGateway::Stage",
+        "Properties": {
+            "AccessLogSetting": {
+              "DestinationArn" : {"Fn::GetAtt": ["IoTDRApiGwAccountLogGroup", "Arn"]},
+              "Format" : "{ \"requestId\":\"$context.requestId\", \"ip\": \"$context.identity.sourceIp\", \"requestTime\":\"$context.requestTime\", \"httpMethod\":\"$context.httpMethod\",\"routeKey\":\"$context.routeKey\", \"status\":\"$context.status\",\"protocol\":\"$context.protocol\", \"responseLength\":\"$context.responseLength\" }"
+            },
+            "DeploymentId": {
+                "Ref": "IoTDRApiGwDeployment"
+            },
+            "Description": "R53 Health Check API Stage v1",
+            "RestApiId": {
+                "Ref": "IoTDRApiGw"
+            },
+            "StageName": "v1",
+            "Tags": [
+              {"Key": "Solution", "Value": "IoTDR "}
+            ]
+        }
+    },
+
+    "IoTDRApiGwDeployment": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "Properties": {
+        "RestApiId": {"Ref": "IoTDRApiGw"},
+        "Description": "R53 health check API deployment"
+      }
+    },
+
+    "IoTDRR53HealthCheck": {
+      "Condition": "CreateHealthCheck",
+      "Type" : "AWS::Route53::HealthCheck",
+      "Properties": {
+         "HealthCheckConfig": {
+           "Type": "HTTPS",
+           "FullyQualifiedDomainName": {"Fn::Join": ["",
+              [{"Ref": "IoTDRApiGw"}, ".execute-api.", {"Ref": "AWS::Region"}, ".amazonaws.com"]
+            ]},
+            "Port": 443,
+            "ResourcePath": {"Fn::Join": ["",
+              ["v1/r53/health-check?hashme=", { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "QUERY_STRING"] }]
+            ]},
+            "RequestInterval": 30,
+            "FailureThreshold": 3,
+            "MeasureLatency": true,
+            "Inverted": false,
+            "EnableSNI": true
+         },
+         "HealthCheckTags": [
+            {
+               "Key": "Name",
+               "Value": { "Fn::Sub": [ "Check for endpoint ${Endpoint}", { "Endpoint": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "ENDPOINT"] }} ]}
+            },
+            {"Key": "Solution", "Value": "IoTDR "}
+         ]
+      }
+    }
+  },
+
+  "Outputs": {
+    "ApiGwUrl": {
+      "Description": "Amazon API Gateway URL",
+      "Value": {"Fn::Join": ["",
+        ["https://", {"Ref": "IoTDRApiGw"}, ".execute-api.", {"Ref": "AWS::Region"}, ".amazonaws.com"]
+      ]}
+    },
+    "IoTDRApiGwAccountLogGroupName": {
+      "Description": "Name for the Api Gateway log group",
+      "Value": {"Ref": "IoTDRApiGwAccountLogGroup"}
+    },
+    "R53HealthCheckUrl": {
+      "Description": "Route 53 health check URL",
+      "Value": {"Fn::Join": ["",
+        ["https://", {"Ref": "IoTDRApiGw"}, ".execute-api.", {"Ref": "AWS::Region"}, ".amazonaws.com/v1/r53/health-check?hashme=", { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "QUERY_STRING"] }]
+      ]}
+    },
+    "R53HealthCheckDomainName": {
+      "Description": "Route 53 health check domain name",
+      "Value": {"Fn::Join": ["",
+        [{"Ref": "IoTDRApiGw"}, ".execute-api.", {"Ref": "AWS::Region"}, ".amazonaws.com"]
+      ]}
+    },
+    "R53HealthCheckPath": {
+      "Description": "Route 53 health check path",
+      "Value": {"Fn::Join": ["",
+        ["v1/r53/health-check?hashme=", { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "QUERY_STRING"] }]
+      ]}
+    },
+    "EnvCA": {
+      "Description": "R53 Checker CA file name",
+      "Value": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "CA"] }
+    },
+    "EnvCERT": {
+      "Description": "R53 Checker cert file name",
+      "Value": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "CERT"] }
+    },
+    "EnvCLIENTID": {
+      "Description": "ClientId for R53 Checker",
+      "Value": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "CLIENT_ID"] }
+    },
+    "EnvENDPOINT": {
+      "Description": "IoT endpoint for R53 Checker",
+      "Value": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "ENDPOINT"] }
+    },
+    "EnvKEY": {
+      "Description": "R53 Checker key file name",
+      "Value": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "KEY"] }
+    },
+    "EnvQUERYSTRING": {
+      "Description": "Query string to call R53 Checker",
+      "Value": { "Fn::GetAtt" : ["CustomCreateR53CheckerLambda", "QUERY_STRING"] }
+    }
+  }
+}
