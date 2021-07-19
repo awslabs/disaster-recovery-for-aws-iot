@@ -1,7 +1,7 @@
 {
   "AWSTemplateFormatVersion" : "2010-09-09",
 
-  "Description" : "AWS CloudFormation launch template for disaster recovery for AWS IoT.",
+  "Description" : "(SO0152) AWS CloudFormation launch template for disaster recovery for AWS IoT.",
 
   "Mappings" : {
     "CONFIG" : {
