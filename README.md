@@ -12,7 +12,7 @@ This Disaster Recovery for AWS IoT Solution provides a setup to replicate device
 
 To create device certificates in the primary region you can use certificates issued by AWS IoT Core or bring your own CA.
 
-You can find an in depth deployment guide for the solution [here](deployment/dr-for-aws-iot-deploy-guide.pdf). Additionally you can find high-level guidance at the [AWS Solutions Library](https://aws.amazon.com/solutions/implementations/disaster-recovery-for-aws-iot/).
+You can find an in depth deployment guide for the solution [here](deployment/dr-for-aws-iot-impl-guide.pdf). Additionally you can find high-level guidance at the [AWS Solutions Library](https://aws.amazon.com/solutions/implementations/disaster-recovery-for-aws-iot/).
 
 ## Launch the solution
 The build process described in this README is based on using an [AWS CloudShell](https://aws.amazon.com/cloudshell/) environment to prepare the launch of CloudFormation stacks which deploy the solution.
