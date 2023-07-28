@@ -1,3 +1,7 @@
+# Deprecation Notice
+
+This AWS Solution has been archived and is no longer maintained by AWS. To discover other solutions, please visit the [AWS Solutions Library](https://aws.amazon.com/solutions/).
+
 # Disaster Recovery for AWS IoT
 
 This Disaster Recovery for AWS IoT Solution provides a setup to replicate device settings and device shadows from a primary AWS region to a secondary AWS region.
